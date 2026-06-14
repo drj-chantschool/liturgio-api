@@ -1,0 +1,6 @@
+fastapi
+uvicorn[standard]
+sqlalchemy
+mysql-connector-python
+keyring
+gabc-tools @ git+https://github.com/drj-chantschool/gabc-tools.git

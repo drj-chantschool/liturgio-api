@@ -1,0 +1,112 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio Chant Editor</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio Chant Editor</h1>
+    <div id="stats-badge"></div>
+  </header>
+
+  <div id="main">
+    <!-- ── Left sidebar: search + list ── -->
+    <aside id="sidebar">
+      <div id="search-area">
+        <input type="search" id="search-input" placeholder="Search chants…" autocomplete="off">
+      </div>
+      <div id="filter-area">
+        <div class="filter-group">
+          <label class="filter-label">Part</label>
+          <div class="chips" id="part-chips">
+            <button class="chip active" data-part="">All</button>
+            <button class="chip" data-part="in">Introit</button>
+            <button class="chip" data-part="gr">Gradual</button>
+            <button class="chip" data-part="al">Alleluia</button>
+            <button class="chip" data-part="of">Offertory</button>
+            <button class="chip" data-part="co">Communion</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Status</label>
+          <div class="chips" id="status-chips">
+            <button class="chip active" data-status="">All</button>
+            <button class="chip" data-status="draft">Draft</button>
+            <button class="chip" data-status="approved">Approved</button>
+          </div>
+        </div>
+      </div>
+      <div id="list-count"></div>
+      <ul id="chant-list"></ul>
+    </aside>
+
+    <!-- ── Right panel: editor ── -->
+    <main id="editor-panel">
+      <div id="empty-state">
+        <p>Select a chant from the list</p>
+      </div>
+
+      <div id="chant-editor" hidden>
+        <div id="chant-header">
+          <div id="chant-title"></div>
+          <div id="chant-meta"></div>
+        </div>
+
+        <div id="chant-controls">
+          <div class="control-row">
+            <label>Status
+              <select id="status-select">
+                <option value="draft">draft</option>
+                <option value="approved">approved</option>
+                <option value="rejected">rejected</option>
+              </select>
+            </label>
+            <label>Translation Source
+              <select id="source-select">
+                <option value="">— none —</option>
+              </select>
+            </label>
+            <label class="checkbox-label">
+              <input type="checkbox" id="exact-check"> Text exact
+            </label>
+          </div>
+          <div class="control-row">
+            <button id="save-btn" class="btn-primary">Save</button>
+            <button id="revert-btn" class="btn-secondary">Revert</button>
+            <span id="save-status"></span>
+          </div>
+        </div>
+
+        <div id="edit-area">
+          <div id="gabc-editor-pane">
+            <div class="pane-label">GABC</div>
+            <textarea id="gabc-textarea" spellcheck="false"></textarea>
+          </div>
+          <div id="preview-pane">
+            <div class="pane-label">Preview (English)</div>
+            <div id="preview-container"></div>
+          </div>
+        </div>
+
+        <details id="assignments-section">
+          <summary id="assignments-summary">Assigned To</summary>
+          <div id="assignments-list"></div>
+        </details>
+
+        <details id="latin-section">
+          <summary id="latin-summary">Latin Reference</summary>
+          <div id="latin-refs"></div>
+        </details>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/app.js"></script>
+</body>
+</html>
