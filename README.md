@@ -1,4 +1,4 @@
-# liturgio-editor
+# liturgio-api
 
 A small FastAPI + vanilla-JS web UI for browsing and editing English GABC
 chant adaptations in the `liturgio` MySQL database (`local_chants`,
