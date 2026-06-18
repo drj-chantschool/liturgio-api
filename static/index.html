@@ -93,7 +93,49 @@
         </div>
 
         <details id="assignments-section">
-          <summary id="assignments-summary">Assigned To</summary>
+          <summary id="assignments-summary">
+            <span id="assignments-summary-text">Assigned To</span>
+          </summary>
+          <div id="assignment-form" hidden>
+            <div class="assign-form-row">
+              <label>Part <select id="af-part"></select></label>
+              <label>Jurisdiction
+                <select id="af-jurisdiction">
+                  <option value="UNIVERSAL">UNIVERSAL</option>
+                  <option value="US">US</option>
+                </select>
+              </label>
+              <label>Authority <select id="af-authority"><option value="">— none —</option></select></label>
+            </div>
+            <div class="assign-form-row">
+              <label>Season
+                <select id="af-season">
+                  <option value="">— none —</option>
+                </select>
+              </label>
+              <label id="af-saint-label" hidden>Saint
+                <select id="af-saint" class="wide"></select>
+              </label>
+              <label id="af-subseason-label" hidden>Subseason
+                <select id="af-subseason"><option value="">— any —</option></select>
+              </label>
+              <label id="af-week-label" hidden>Week
+                <select id="af-week"><option value="">— any —</option></select>
+              </label>
+              <label id="af-day-label" hidden>Day
+                <select id="af-day"><option value="">— any —</option></select>
+              </label>
+            </div>
+            <div class="assign-form-row">
+              <label>Notes <input type="text" id="af-notes" placeholder="Optional notes"></label>
+              <button id="af-save" class="btn-primary btn-sm">Add</button>
+              <button id="af-cancel" class="btn-secondary btn-sm">Cancel</button>
+              <span id="af-status"></span>
+            </div>
+          </div>
+          <div id="assign-toolbar">
+            <button id="add-assignment-btn" class="btn-add-assign" title="Add assignment">+ Assign</button>
+          </div>
           <div id="assignments-list"></div>
         </details>
 

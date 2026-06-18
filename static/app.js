@@ -48,7 +48,26 @@ const revertBtn       = $('revert-btn');
 const saveStatus      = $('save-status');
 const assignSection   = $('assignments-section');
 const assignSummary   = $('assignments-summary');
+const assignSummaryTx = $('assignments-summary-text');
 const assignList      = $('assignments-list');
+const addAssignBtn    = $('add-assignment-btn');
+const assignForm      = $('assignment-form');
+const afPart          = $('af-part');
+const afJurisdiction  = $('af-jurisdiction');
+const afAuthority     = $('af-authority');
+const afSeason        = $('af-season');
+const afSaintLabel    = $('af-saint-label');
+const afSaint         = $('af-saint');
+const afSubseasonLbl  = $('af-subseason-label');
+const afSubseason     = $('af-subseason');
+const afWeekLabel     = $('af-week-label');
+const afWeek          = $('af-week');
+const afDayLabel      = $('af-day-label');
+const afDay           = $('af-day');
+const afNotes         = $('af-notes');
+const afSave          = $('af-save');
+const afCancel        = $('af-cancel');
+const afStatus        = $('af-status');
 const latinSection    = $('latin-section');
 const latinSummary    = $('latin-summary');
 const latinRefs       = $('latin-refs');
@@ -269,7 +288,7 @@ function formatAssignDay(a) {
 
 function renderAssignments(assignments) {
   const n = assignments.length;
-  assignSummary.textContent = `Assigned To (${n})`;
+  assignSummaryTx.textContent = `Assigned To (${n})`;
   assignList.innerHTML = '';
 
   if (!n) {
@@ -284,13 +303,19 @@ function renderAssignments(assignments) {
     const badges = [
       a.authority   ? `<span class="assign-badge authority">${escHtml(a.authority)}</span>`  : '',
       a.jurisdiction? `<span class="assign-badge">${escHtml(a.jurisdiction)}</span>` : '',
+      a.option_num > 1 ? `<span class="assign-badge alt">opt ${a.option_num}</span>` : '',
       a.notes       ? `<span class="assign-badge" title="${escHtml(a.notes)}">note</span>` : '',
     ].join('');
 
     row.innerHTML =
       `<span class="assign-part">${escHtml(a.part_name || a.part_code || '')}</span>` +
       `<span class="assign-day">${formatAssignDay(a)}</span>` +
-      `<span class="assign-badges">${badges}</span>`;
+      `<span class="assign-badges">${badges}</span>` +
+      `<button class="assign-delete" title="Remove assignment">&times;</button>`;
+
+    row.querySelector('.assign-delete').addEventListener('click', () =>
+      deleteAssignment(a.assignment_id)
+    );
 
     assignList.appendChild(row);
   }
@@ -330,6 +355,10 @@ function renderLatinRefs(refs) {
   }
 }
 
+assignSection.addEventListener('toggle', () => {
+  if (!assignSection.open) assignForm.hidden = true;
+});
+
 // Re-render Latin refs when the section is opened (container now has width)
 latinSection.addEventListener('toggle', () => {
   if (!latinSection.open || !state.selected) return;
@@ -340,6 +369,234 @@ latinSection.addEventListener('toggle', () => {
     }
   });
 });
+
+// ── Assignment form ──────────────────────────────────────────────────────────
+let _lookups = null;
+let _epochTree = null;
+
+async function loadAssignmentLookups() {
+  if (_lookups) return;
+  try {
+    const [parts, auths, tree] = await Promise.all([
+      apiFetch('/api/service_parts'),
+      apiFetch('/api/assignment_authorities'),
+      apiFetch('/api/lit_epoch_tree'),
+    ]);
+    _lookups = { parts, auths };
+    _epochTree = tree;
+
+    afPart.innerHTML = '';
+    for (const p of parts) {
+      const opt = document.createElement('option');
+      opt.value = p.part_id;
+      opt.textContent = p.display_name;
+      afPart.appendChild(opt);
+    }
+
+    afAuthority.innerHTML = '<option value="">— none —</option>';
+    for (const a of auths) {
+      const opt = document.createElement('option');
+      opt.value = a.code;
+      opt.textContent = a.display_name;
+      afAuthority.appendChild(opt);
+    }
+
+    afSeason.innerHTML = '<option value="">— none —</option>';
+    for (const s of tree.seasons) {
+      const opt = document.createElement('option');
+      opt.value = s.slug;
+      opt.textContent = s.title;
+      afSeason.appendChild(opt);
+    }
+    const saintOpt = document.createElement('option');
+    saintOpt.value = '__saint__';
+    saintOpt.textContent = 'Saint / Feast';
+    afSeason.appendChild(saintOpt);
+  } catch (err) {
+    console.error('Failed to load assignment lookups', err);
+  }
+}
+
+function resetCascade(fromLevel) {
+  const levels = ['saint', 'subseason', 'week', 'day'];
+  const starts = levels.indexOf(fromLevel);
+  for (let i = starts; i < levels.length; i++) {
+    const lbl = $(`af-${levels[i]}-label`) || (levels[i] === 'saint' ? afSaintLabel : null);
+    if (levels[i] === 'saint') {
+      afSaintLabel.hidden = true;
+      afSaint.innerHTML = '';
+    } else if (levels[i] === 'subseason') {
+      afSubseasonLbl.hidden = true;
+      afSubseason.innerHTML = '<option value="">— any —</option>';
+    } else if (levels[i] === 'week') {
+      afWeekLabel.hidden = true;
+      afWeek.innerHTML = '<option value="">— any —</option>';
+    } else if (levels[i] === 'day') {
+      afDayLabel.hidden = true;
+      afDay.innerHTML = '<option value="">— any —</option>';
+    }
+  }
+}
+
+afSeason.addEventListener('change', () => {
+  const val = afSeason.value;
+  resetCascade('saint');
+
+  if (val === '__saint__') {
+    afSaintLabel.hidden = false;
+    afSaint.innerHTML = '';
+    const sorted = [..._epochTree.saints].sort((a, b) => {
+      const am = a.month ?? 99, ad = a.day ?? 99;
+      const bm = b.month ?? 99, bd = b.day ?? 99;
+      return am - bm || ad - bd;
+    });
+    for (const s of sorted) {
+      const opt = document.createElement('option');
+      opt.value = s.slug;
+      const dateStr = s.month != null
+        ? `${String(s.month).padStart(2, '0')}/${String(s.day).padStart(2, '0')}  `
+        : '';
+      opt.textContent = `${dateStr}${s.title}`;
+      afSaint.appendChild(opt);
+    }
+    return;
+  }
+
+  if (!val) return;
+
+  const subs = _epochTree.subseasons[val];
+  if (subs && subs.length) {
+    afSubseasonLbl.hidden = false;
+    afSubseason.innerHTML = '<option value="">— any —</option>';
+    for (const s of subs) {
+      const opt = document.createElement('option');
+      opt.value = s.subseason;
+      opt.textContent = s.title;
+      opt.dataset.slug = s.slug;
+      afSubseason.appendChild(opt);
+    }
+  }
+});
+
+afSubseason.addEventListener('change', () => {
+  resetCascade('week');
+  const season = afSeason.value;
+  const sub = afSubseason.value;
+  if (!sub) return;
+
+  const key = `${season}/${sub}`;
+  const weeks = _epochTree.weeks[key];
+  if (weeks && weeks.length) {
+    afWeekLabel.hidden = false;
+    afWeek.innerHTML = '<option value="">— any —</option>';
+    for (const w of weeks) {
+      const opt = document.createElement('option');
+      opt.value = w.wknum;
+      opt.textContent = `Week ${w.wknum}`;
+      opt.dataset.slug = w.slug;
+      afWeek.appendChild(opt);
+    }
+  }
+});
+
+afWeek.addEventListener('change', () => {
+  resetCascade('day');
+  const season = afSeason.value;
+  const sub = afSubseason.value;
+  const wk = afWeek.value;
+  if (!wk) return;
+
+  const key = `${season}/${sub}/${wk}`;
+  const days = _epochTree.days[key];
+  if (days && days.length) {
+    afDayLabel.hidden = false;
+    afDay.innerHTML = '<option value="">— any —</option>';
+    for (const d of days) {
+      const opt = document.createElement('option');
+      opt.value = d.slug;
+      opt.textContent = d.title;
+      afDay.appendChild(opt);
+    }
+  }
+});
+
+function getSelectedEpochSlug() {
+  const season = afSeason.value;
+  if (!season) return null;
+  if (season === '__saint__') return afSaint.value || null;
+
+  if (afDay.value) return afDay.value;
+
+  if (afWeek.value) {
+    const sel = afWeek.selectedOptions[0];
+    return sel?.dataset.slug || null;
+  }
+
+  if (afSubseason.value) {
+    const sel = afSubseason.selectedOptions[0];
+    return sel?.dataset.slug || null;
+  }
+
+  return season;
+}
+
+addAssignBtn.addEventListener('click', async () => {
+  if (!state.selected) return;
+  await loadAssignmentLookups();
+  assignForm.hidden = false;
+  afStatus.textContent = '';
+  afSeason.value = '';
+  resetCascade('saint');
+  afNotes.value = '';
+});
+
+afCancel.addEventListener('click', () => {
+  assignForm.hidden = true;
+});
+
+afSave.addEventListener('click', async () => {
+  if (!state.selected) return;
+  afSave.disabled = true;
+  afStatus.textContent = 'Saving…';
+
+  const body = {
+    jurisdiction: afJurisdiction.value,
+    part_id: parseInt(afPart.value),
+    lit_epoch_slug: getSelectedEpochSlug(),
+    assignment_authority_code: afAuthority.value || null,
+    notes: afNotes.value.trim() || null,
+  };
+
+  try {
+    await apiFetch(`/api/chant_groups/${state.selected.chant_group_id}/assignments`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    assignForm.hidden = true;
+    const chant = await apiFetch(`/api/chants/${state.selected.local_chant_id}`);
+    state.selected = chant;
+    state.original = structuredClone(chant);
+    renderAssignments(chant.assignments || []);
+  } catch (err) {
+    afStatus.textContent = err.message;
+  } finally {
+    afSave.disabled = false;
+  }
+});
+
+async function deleteAssignment(assignmentId) {
+  if (!confirm('Remove this assignment?')) return;
+  try {
+    await apiFetch(`/api/assignments/${assignmentId}`, { method: 'DELETE' });
+    const chant = await apiFetch(`/api/chants/${state.selected.local_chant_id}`);
+    state.selected = chant;
+    state.original = structuredClone(chant);
+    renderAssignments(chant.assignments || []);
+  } catch (err) {
+    alert('Delete failed: ' + err.message);
+  }
+}
 
 // ── Save / Revert ─────────────────────────────────────────────────────────────
 function markDirty() {

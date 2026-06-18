@@ -522,6 +522,86 @@ select:focus { border-color: var(--accent-lt); }
   font-family: 'Courier New', monospace;
 }
 .assign-badge.authority { background: #e8dfc8; color: var(--accent); }
+.assign-badge.alt { background: #dde8f0; color: #4a7090; }
+
+/* ── Assignment toolbar & form ─────────────────────────────────────── */
+#assign-toolbar {
+  padding: 0.3rem 1rem;
+  border-bottom: 1px solid #ede5d8;
+}
+
+.btn-add-assign {
+  background: none;
+  border: 1px solid var(--border);
+  color: var(--accent);
+  padding: 0.18rem 0.6rem;
+  border-radius: 3px;
+  font-size: 0.7rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.btn-add-assign:hover { background: var(--accent); color: #fff; border-color: var(--accent); }
+
+#assignment-form {
+  padding: 0.5rem 1rem 0.6rem;
+  background: #faf5eb;
+  border-bottom: 1px solid var(--border);
+}
+
+.assign-form-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  margin-bottom: 0.35rem;
+  flex-wrap: wrap;
+}
+.assign-form-row:last-child { margin-bottom: 0; }
+
+.assign-form-row > label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.73rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+.assign-form-row select,
+.assign-form-row input[type="text"] {
+  background: #fff;
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.2rem 0.4rem;
+  font-size: 0.75rem;
+  font-family: inherit;
+  color: var(--text);
+}
+.assign-form-row select.wide { min-width: 14rem; }
+.assign-form-row input[type="text"] { width: 10rem; }
+
+.btn-sm { padding: 0.22rem 0.7rem; font-size: 0.73rem; }
+
+#af-status {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ── Delete button on assignment rows ─────────────────────────────── */
+.assign-delete {
+  background: none;
+  border: none;
+  color: #c0a090;
+  cursor: pointer;
+  font-size: 0.72rem;
+  padding: 0.1rem 0.3rem;
+  border-radius: 2px;
+  opacity: 0;
+  transition: opacity 0.12s, color 0.12s;
+}
+.assignment-row:hover .assign-delete { opacity: 1; }
+.assign-delete:hover { color: #c05050; }
 
 .render-note { color: #b0a090; font-size: 0.78rem; }
 .render-note.error { color: #c05050; }

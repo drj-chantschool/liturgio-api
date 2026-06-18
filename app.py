@@ -83,6 +83,7 @@ class Assignment(BaseModel):
     lpa_seq: Optional[int] = None
     cycle_sun: Optional[str] = None
     cycle_wk: Optional[str] = None
+    option_num: int = 1
     notes: Optional[str] = None
 
 
@@ -92,6 +93,18 @@ class ChantDetail(ChantSummary):
     gabc: Optional[str] = None
     latin_refs: List[LatinRef] = []
     assignments: List[Assignment] = []
+
+
+class AssignmentCreate(BaseModel):
+    jurisdiction: str
+    part_id: int
+    lit_epoch_slug: Optional[str] = None
+    assignment_authority_code: Optional[str] = None
+    wkday: Optional[int] = None
+    cycle_sun: Optional[str] = None
+    cycle_wk: Optional[str] = None
+    option_num: int = 1
+    notes: Optional[str] = None
 
 
 class ChantUpdate(BaseModel):
@@ -196,23 +209,18 @@ def get_chant(chant_id: str):
             assign_rows = conn.execute(text("""
                 SELECT lpa.assignment_id, lpa.jurisdiction,
                        lpa.assignment_authority_code,
-                       lpa.wkday, lpa.seq AS lpa_seq,
-                       lpa.cycle_sun, lpa.cycle_wk, lpa.notes,
-                       lpa.season, lpa.subseason, lpa.wknum,
+                       lpa.wkday, le.seq AS lpa_seq,
+                       lpa.cycle_sun, lpa.cycle_wk, lpa.option_num,
+                       lpa.notes,
+                       le.season, le.subseason, le.wknum,
                        sp.display_name AS part_name, sp.part_code,
-                       ld.title AS day_title
+                       le.title AS day_title
                 FROM lit_part_assignment lpa
                 JOIN service_part sp ON sp.part_id = lpa.part_id
-                LEFT JOIN liturgical_day ld ON (
-                    ld.season    = lpa.season
-                    AND ld.subseason = lpa.subseason
-                    AND ld.wknum     = lpa.wknum
-                    AND ld.seq       = lpa.seq
-                    AND lpa.seq IS NOT NULL
-                )
+                LEFT JOIN lit_epoch le ON le.slug = lpa.lit_epoch_slug
                 WHERE lpa.chant_group_id = :gid
                 ORDER BY sp.display_order, lpa.jurisdiction,
-                         COALESCE(ld.title, lpa.season, '')
+                         COALESCE(le.title, le.season, '')
             """), {'gid': row['chant_group_id']}).mappings().fetchall()
     except HTTPException:
         raise
@@ -247,6 +255,7 @@ def get_chant(chant_id: str):
             lpa_seq=r['lpa_seq'],
             cycle_sun=r['cycle_sun'],
             cycle_wk=r['cycle_wk'],
+            option_num=r['option_num'],
             notes=r['notes'],
         )
         for r in assign_rows
@@ -316,6 +325,217 @@ def list_translation_sources():
         {'code': r['translation_source_code'], 'display_name': r['display_name']}
         for r in rows
     ]
+
+
+@app.get("/api/service_parts")
+def list_service_parts():
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text("""
+                SELECT part_id, part_code, display_name, service_code
+                FROM service_part
+                ORDER BY display_order
+            """)).mappings().fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/lit_epochs")
+def list_lit_epochs(q: Optional[str] = None, limit: int = Query(50, le=200)):
+    conditions = []
+    params: dict = {'limit': limit}
+    if q:
+        conditions.append("(LOWER(le.title) LIKE :q OR LOWER(le.slug) LIKE :q)")
+        params['q'] = f'%{q.lower()}%'
+    where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT slug, title, season, subseason, wknum
+                FROM lit_epoch le
+                {where}
+                ORDER BY sort_order, slug
+                LIMIT :limit
+            """), params).mappings().fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return [dict(r) for r in rows]
+
+
+@app.get("/api/lit_epoch_tree")
+def lit_epoch_tree():
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text("""
+                SELECT slug, kind, title, season, subseason, wknum, sort_order
+                FROM lit_epoch
+                ORDER BY sort_order, slug
+            """)).mappings().fetchall()
+
+            date_rows = conn.execute(text("""
+                SELECT slug, month_nominal, day_nominal
+                FROM proper_of_saints
+                WHERE month_nominal IS NOT NULL
+            """)).mappings().fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+
+    saint_dates = {}
+    for dr in date_rows:
+        saint_dates[dr['slug']] = (dr['month_nominal'], dr['day_nominal'])
+
+    seasons = []
+    saints = []
+    sub_map: dict = {}
+    week_map: dict = {}
+    day_map: dict = {}
+
+    for r in rows:
+        kind = r['kind']
+        if kind == 'season':
+            seasons.append({
+                'slug': r['slug'], 'title': r['title'] or r['slug'],
+            })
+        elif kind == 'saint':
+            entry: dict = {
+                'slug': r['slug'], 'title': r['title'] or r['slug'],
+            }
+            if r['slug'] in saint_dates:
+                entry['month'] = saint_dates[r['slug']][0]
+                entry['day'] = saint_dates[r['slug']][1]
+            saints.append(entry)
+        elif kind == 'subseason':
+            key = r['season']
+            sub_map.setdefault(key, []).append({
+                'slug': r['slug'],
+                'title': r['title'] or r['subseason'] or r['slug'],
+                'subseason': r['subseason'],
+            })
+        elif kind == 'week':
+            key = f"{r['season']}/{r['subseason']}"
+            week_map.setdefault(key, []).append({
+                'slug': r['slug'],
+                'wknum': r['wknum'],
+            })
+        elif kind in ('day', 'mass'):
+            key = f"{r['season']}/{r['subseason']}/{r['wknum']}"
+            day_map.setdefault(key, []).append({
+                'slug': r['slug'],
+                'title': r['title'] or r['slug'],
+            })
+
+    return {
+        'seasons': seasons,
+        'saints': saints,
+        'subseasons': sub_map,
+        'weeks': week_map,
+        'days': day_map,
+    }
+
+
+@app.get("/api/assignment_authorities")
+def list_assignment_authorities():
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text("""
+                SELECT authority_code AS code, display_name
+                FROM p_assignment_authority
+                WHERE is_active = 1
+                ORDER BY sort_order
+            """)).mappings().fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return [dict(r) for r in rows]
+
+
+@app.post("/api/chant_groups/{group_id}/assignments", response_model=Assignment)
+def create_assignment(group_id: int, body: AssignmentCreate):
+    try:
+        with rw().begin() as conn:
+            grp = conn.execute(text(
+                "SELECT chant_group_id FROM chant_group WHERE chant_group_id = :gid"
+            ), {'gid': group_id}).fetchone()
+            if not grp:
+                raise HTTPException(404, "Chant group not found")
+
+            result = conn.execute(text("""
+                INSERT INTO lit_part_assignment
+                    (jurisdiction, part_id, lit_epoch_slug,
+                     assignment_authority_code, wkday,
+                     cycle_sun, cycle_wk, option_num,
+                     chant_group_id, notes)
+                VALUES
+                    (:jurisdiction, :part_id, :lit_epoch_slug,
+                     :authority, :wkday,
+                     :cycle_sun, :cycle_wk, :option_num,
+                     :gid, :notes)
+            """), {
+                'jurisdiction': body.jurisdiction,
+                'part_id': body.part_id,
+                'lit_epoch_slug': body.lit_epoch_slug or None,
+                'authority': body.assignment_authority_code or None,
+                'wkday': body.wkday,
+                'cycle_sun': body.cycle_sun,
+                'cycle_wk': body.cycle_wk,
+                'option_num': body.option_num,
+                'gid': group_id,
+                'notes': body.notes or None,
+            })
+            new_id = result.lastrowid
+
+            row = conn.execute(text("""
+                SELECT lpa.assignment_id, lpa.jurisdiction,
+                       lpa.assignment_authority_code,
+                       lpa.wkday, le.seq AS lpa_seq,
+                       lpa.cycle_sun, lpa.cycle_wk, lpa.option_num,
+                       lpa.notes,
+                       le.season, le.subseason, le.wknum,
+                       sp.display_name AS part_name, sp.part_code,
+                       le.title AS day_title
+                FROM lit_part_assignment lpa
+                JOIN service_part sp ON sp.part_id = lpa.part_id
+                LEFT JOIN lit_epoch le ON le.slug = lpa.lit_epoch_slug
+                WHERE lpa.assignment_id = :aid
+            """), {'aid': new_id}).mappings().fetchone()
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+
+    return Assignment(
+        assignment_id=row['assignment_id'],
+        jurisdiction=row['jurisdiction'],
+        authority=row['assignment_authority_code'],
+        part_name=row['part_name'],
+        part_code=row['part_code'],
+        day_title=row['day_title'],
+        season=row['season'],
+        subseason=row['subseason'],
+        wknum=row['wknum'],
+        wkday=row['wkday'],
+        lpa_seq=row['lpa_seq'],
+        cycle_sun=row['cycle_sun'],
+        cycle_wk=row['cycle_wk'],
+        option_num=row['option_num'],
+        notes=row['notes'],
+    )
+
+
+@app.delete("/api/assignments/{assignment_id}")
+def delete_assignment(assignment_id: int):
+    try:
+        with rw().begin() as conn:
+            result = conn.execute(text(
+                "DELETE FROM lit_part_assignment WHERE assignment_id = :aid"
+            ), {'aid': assignment_id})
+            if result.rowcount == 0:
+                raise HTTPException(404, "Assignment not found")
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return {'ok': True}
 
 
 @app.get("/api/stats")
