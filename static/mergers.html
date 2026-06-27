@@ -1,0 +1,62 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Merge Manager</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Merge Manager</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers" class="active">Merge Manager</a>
+    </nav>
+    <div id="merge-stats-badge"></div>
+  </header>
+
+  <div id="merge-main">
+
+    <!-- ── Manual comparison ── -->
+    <section id="manual-section">
+      <div id="manual-bar">
+        <span class="section-label">Manual Comparison</span>
+        <div id="manual-inputs">
+          <label>Group A
+            <input type="number" id="manual-id-a" placeholder="chant_group_id" min="1">
+          </label>
+          <label>Group B
+            <input type="number" id="manual-id-b" placeholder="chant_group_id" min="1">
+          </label>
+          <button id="manual-compare-btn" class="btn-secondary btn-sm">Compare</button>
+          <span id="manual-msg"></span>
+        </div>
+      </div>
+      <div id="manual-card-area"></div>
+    </section>
+
+    <!-- ── Likely-merger queue ── -->
+    <section id="queue-section">
+      <div id="queue-bar">
+        <span class="section-label">Likely Mergers</span>
+        <span id="queue-status-msg"></span>
+      </div>
+      <div id="queue-loading" hidden>Loading candidates…</div>
+      <div id="queue-empty"   hidden>No more candidates in the queue.</div>
+      <div id="queue-cards"></div>
+      <div id="queue-footer">
+        <button id="load-more-btn" class="btn-secondary" hidden>Load more</button>
+      </div>
+    </section>
+
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/mergers.js"></script>
+</body>
+</html>

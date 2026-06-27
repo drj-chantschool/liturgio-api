@@ -314,7 +314,7 @@ function renderAssignments(assignments) {
       `<button class="assign-delete" title="Remove assignment">&times;</button>`;
 
     row.querySelector('.assign-delete').addEventListener('click', () =>
-      deleteAssignment(a.assignment_id)
+      deleteAssignment(a.text_id)
     );
 
     assignList.appendChild(row);

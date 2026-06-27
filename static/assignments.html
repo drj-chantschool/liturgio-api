@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Assignment Review</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Assignment Review</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments" class="active">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+    </nav>
+  </header>
+
+  <div id="main">
+    <!-- Left sidebar: epoch navigation + list -->
+    <aside id="sidebar">
+      <div id="filter-area">
+        <!-- Row 1: kind -->
+        <div class="filter-group">
+          <label class="filter-label">Browse by</label>
+          <div class="chips" id="kind-chips">
+            <button class="chip" data-kind="saint">Saint</button>
+            <button class="chip" data-kind="season">Season</button>
+            <button class="chip" data-kind="subseason">Subseason</button>
+            <button class="chip active" data-kind="week">Week</button>
+            <button class="chip" data-kind="day">Day</button>
+          </div>
+        </div>
+        <!-- Row 2: season (shown for subseason/week/day) -->
+        <div class="filter-group" id="season-filter" hidden>
+          <label class="filter-label">Season</label>
+          <div class="chips" id="season-chips"></div>
+        </div>
+        <!-- Row 3: week dropdown (shown for day kind only, after season selected) -->
+        <div class="filter-group" id="week-filter" hidden>
+          <label class="filter-label">Week</label>
+          <select id="week-select">
+            <option value="">— select week —</option>
+          </select>
+        </div>
+      </div>
+      <div id="src-list-count"></div>
+      <ul id="src-list"></ul>
+    </aside>
+
+    <!-- Right panel: epoch assignment review -->
+    <main id="src-panel">
+      <div id="src-empty-state">
+        <p>Select an epoch from the list to review its assignments</p>
+      </div>
+
+      <div id="src-editor" hidden>
+        <div id="src-edit-col">
+          <div id="src-header">
+            <div id="src-title"></div>
+          </div>
+
+          <!-- Inherited assignments (from ancestor epochs, not overridden here) -->
+          <div id="inherited-section" hidden>
+            <div class="review-section-header">Inherited — not overridden at this epoch</div>
+            <div id="inherited-list"></div>
+          </div>
+
+          <!-- Per-part assignment sections -->
+          <div id="parts-section"></div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/assignments.js"></script>
+</body>
+</html>

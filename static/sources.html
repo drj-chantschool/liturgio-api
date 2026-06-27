@@ -1,0 +1,141 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Source Review</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Source Review</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources" class="active">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+    </nav>
+    <div id="src-stats-badge"></div>
+  </header>
+
+  <div id="main">
+    <!-- ── Left sidebar: filters + list ── -->
+    <aside id="sidebar">
+      <div id="filter-area">
+        <div class="filter-group">
+          <label class="filter-label">Book</label>
+          <div class="chips" id="book-chips">
+            <button class="chip active" data-book="GRADUALE">Graduale (GR)</button>
+            <button class="chip" data-book="">All sources</button>
+          </div>
+        </div>
+        <div class="filter-group">
+          <label class="filter-label">Status</label>
+          <div class="chips" id="status-chips">
+            <button class="chip active" data-status="">All</button>
+            <button class="chip" data-status="draft">Draft</button>
+            <button class="chip" data-status="reviewed">Reviewed</button>
+            <button class="chip" data-status="rejected">Rejected</button>
+            <button class="chip" data-status="published">Published</button>
+          </div>
+        </div>
+      </div>
+      <div id="src-search-area">
+        <input type="search" id="src-search" placeholder="Search text / citation / epoch…" autocomplete="off">
+      </div>
+      <div id="src-list-count"></div>
+      <div id="src-bbox-filter-banner" hidden>
+        <span id="src-bbox-filter-label"></span>
+        <button id="src-bbox-filter-clear" title="Clear filter">✕</button>
+      </div>
+      <ul id="src-list"></ul>
+    </aside>
+
+    <!-- ── Right panel: review editor + page image ── -->
+    <main id="src-panel">
+      <div id="src-empty-state">
+        <p>Select a source from the list to review it</p>
+      </div>
+
+      <div id="src-editor" hidden>
+        <div id="src-edit-col">
+          <div id="src-header">
+            <div id="src-title"></div>
+            <div id="src-meta"></div>
+          </div>
+
+          <div class="src-controls">
+            <div class="control-row">
+              <label>Status
+                <select id="se-status">
+                  <option value="draft">draft</option>
+                  <option value="reviewed">reviewed</option>
+                  <option value="rejected">rejected</option>
+                  <option value="published">published</option>
+                </select>
+              </label>
+              <label>Part
+                <select id="se-part"></select>
+              </label>
+            </div>
+            <div class="control-row">
+              <label>Epoch slug
+                <input type="text" id="se-epoch" class="wide" placeholder="lit_epoch_slug">
+              </label>
+              <label>Wkday
+                <input type="number" id="se-wkday" min="1" max="7" placeholder="—">
+              </label>
+            </div>
+            <div class="control-row">
+              <label class="wide">Source citation (text_src)
+                <input type="text" id="se-textsrc" placeholder="e.g. Is. 9, 6; Ps. 97">
+              </label>
+            </div>
+          </div>
+
+          <div class="src-field">
+            <div class="pane-label">Latin text (original_text)</div>
+            <textarea id="se-original" spellcheck="false" rows="5"></textarea>
+          </div>
+          <div class="src-field">
+            <div class="pane-label">Vernacular text (vernacular_text)</div>
+            <textarea id="se-vernacular" spellcheck="false" rows="3"></textarea>
+          </div>
+
+          <div class="src-field">
+            <div class="pane-label">Bounding box (x0,y0,x1,y1 — drag the box or handles on the image)</div>
+            <input type="text" id="se-bbox" placeholder="x0,y0,x1,y1">
+          </div>
+
+          <details id="src-chant-section" hidden>
+            <summary class="pane-label">Chant engraving</summary>
+            <div id="src-chant-meta" class="src-chant-meta"></div>
+            <div id="src-chant-preview"></div>
+          </details>
+
+          <div class="control-row src-actions">
+            <button id="se-approve" class="btn-primary">✓ Approve (reviewed)</button>
+            <button id="se-reject" class="btn-delete">✗ Reject</button>
+            <button id="se-save" class="btn-secondary">Save edits</button>
+            <button id="se-revert" class="btn-secondary">Revert</button>
+            <span id="se-status-msg"></span>
+          </div>
+        </div>
+
+        <div id="src-image-col">
+          <div class="pane-label" id="src-image-label">Page image</div>
+          <div id="src-image-wrap">
+            <img id="src-page-img" alt="source page">
+            <div id="src-bbox-overlay"><span class="bbox-label" id="se-bbox-label"></span></div>
+          </div>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/sources.js"></script>
+</body>
+</html>
