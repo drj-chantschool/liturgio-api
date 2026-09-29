@@ -1,0 +1,69 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Day View</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/day.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Day View</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day" class="active">Day View</a>
+    </nav>
+  </header>
+
+  <div id="main" class="day-main">
+
+    <!-- ── Date navigation bar ── -->
+    <div id="date-bar">
+      <div id="date-nav-controls">
+        <button id="nav-prev-week" class="btn-secondary btn-sm" title="Previous week">&laquo;</button>
+        <button id="nav-prev-day"  class="btn-secondary btn-sm" title="Previous day">&lsaquo;</button>
+        <input type="date" id="date-input">
+        <button id="nav-next-day"  class="btn-secondary btn-sm" title="Next day">&rsaquo;</button>
+        <button id="nav-next-week" class="btn-secondary btn-sm" title="Next week">&raquo;</button>
+        <button id="nav-today" class="btn-secondary btn-sm">Today</button>
+      </div>
+      <div id="date-display"></div>
+      <label id="jurisdiction-picker">Jurisdiction
+        <select id="jurisdiction-select">
+          <option value="US">US</option>
+          <option value="UNIVERSAL">UNIVERSAL</option>
+        </select>
+      </label>
+    </div>
+
+    <!-- ── Observance tabs ── -->
+    <div id="observance-tabs" class="chips"></div>
+
+    <!-- ── Content pane ── -->
+    <main id="day-content">
+      <div id="day-loading" class="day-empty-state" hidden>Loading&hellip;</div>
+      <div id="day-error" class="day-empty-state" hidden></div>
+      <div id="day-empty" class="day-empty-state">Pick a date to see that day&rsquo;s observances.</div>
+      <div id="observance-panel" hidden>
+        <div id="observance-header">
+          <div id="observance-title"></div>
+          <div id="observance-meta"></div>
+        </div>
+        <div id="formulary-tabs" class="chips" hidden></div>
+        <div id="service-groups"></div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/day.js"></script>
+</body>
+</html>

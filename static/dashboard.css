@@ -1,0 +1,155 @@
+/* Dashboard-specific styles — supplements style.css */
+
+#dash-main {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  padding: 1.2rem 1.6rem;
+  gap: 1.2rem;
+}
+
+#dash-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.8rem;
+  flex-wrap: wrap;
+  padding-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+}
+
+#dash-controls .filter-label {
+  display: inline;
+  margin-bottom: 0;
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+}
+
+/* chips in light-bg context */
+#scope-chips .chip {
+  background: #e8e0d0;
+  border-color: var(--border);
+  color: var(--text-muted);
+}
+#scope-chips .chip:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+#scope-chips .chip.active {
+  background: var(--accent-lt);
+  border-color: var(--accent-lt);
+  color: #1a1815;
+}
+
+#dash-body {
+  display: flex;
+  flex-direction: column;
+  gap: 1.8rem;
+}
+
+#dash-loading {
+  color: var(--text-muted);
+  font-style: italic;
+  padding: 1rem 0;
+}
+
+#dash-error {
+  color: #c0392b;
+  padding: 0.6rem;
+  border: 1px solid #c0392b;
+  border-radius: 4px;
+  background: #fdf0ef;
+}
+
+/* ── Sections ─────────────────────────────────────────────────────────────── */
+#dash-section-sources h2,
+#dash-section-chants h2 {
+  font-size: 1rem;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3rem;
+}
+
+#dash-sources-cards {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+}
+
+/* ── Cards ────────────────────────────────────────────────────────────────── */
+.dash-card {
+  background: var(--editor-bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 1rem 1.2rem;
+  min-width: 340px;
+  flex: 1 1 340px;
+  max-width: 600px;
+}
+
+.dash-card-title {
+  font-size: 0.85rem;
+  font-weight: bold;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  margin-bottom: 0.8rem;
+}
+
+.dash-card-parts {
+  display: flex;
+  flex-direction: column;
+  gap: 0.55rem;
+}
+
+/* ── Progress bars ────────────────────────────────────────────────────────── */
+.dash-part-row {
+  display: grid;
+  grid-template-columns: 10rem 1fr 7rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.dash-part-label {
+  font-size: 0.78rem;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.dash-bar-track {
+  height: 14px;
+  background: #e0d8cc;
+  border-radius: 3px;
+  overflow: hidden;
+  position: relative;
+}
+
+.dash-bar-fill {
+  height: 100%;
+  background: #5a9a50;  /* project green accent */
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  min-width: 0;
+}
+
+.dash-bar-pct {
+  font-size: 0.70rem;
+  color: var(--text-muted);
+  font-family: 'Courier New', monospace;
+  white-space: nowrap;
+  text-align: right;
+}
+
+/* ── Responsive: narrow screen collapses cards ───────────────────────────── */
+@media (max-width: 700px) {
+  .dash-card { min-width: 100%; max-width: 100%; }
+  .dash-part-row { grid-template-columns: 8rem 1fr 6rem; }
+}

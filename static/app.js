@@ -725,4 +725,7 @@ window.addEventListener('resize', () => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-Promise.all([loadChants(), loadStats(), loadTranslationSources()]);
+Promise.all([loadChants(), loadStats(), loadTranslationSources()]).then(() => {
+  const hashId = window.location.hash.slice(1);
+  if (hashId) selectChant(hashId);
+});

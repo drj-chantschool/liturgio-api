@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Liturgio — Assignment Review</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/gr-index.css">
+  <link rel="stylesheet" href="/static/assignments.css">
 </head>
 <body>
 <div id="app">
@@ -15,6 +17,9 @@
       <a href="/sources">Source Review</a>
       <a href="/assignments" class="active">Assignment Review</a>
       <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day">Day View</a>
     </nav>
   </header>
 
@@ -31,6 +36,8 @@
             <button class="chip" data-kind="subseason">Subseason</button>
             <button class="chip active" data-kind="week">Week</button>
             <button class="chip" data-kind="day">Day</button>
+            <button class="chip" data-kind="common">Common</button>
+            <button class="chip" data-kind="ritual">Ritual &amp; Votive</button>
           </div>
         </div>
         <!-- Row 2: season (shown for subseason/week/day) -->
@@ -45,34 +52,265 @@
             <option value="">— select week —</option>
           </select>
         </div>
+        <!-- Row 4: month dropdown (shown for saint kind only) -->
+        <div class="filter-group" id="month-filter" hidden>
+          <label class="filter-label">Month</label>
+          <select id="month-select">
+            <option value="">— all months —</option>
+          </select>
+        </div>
+        <!-- Row 5: Graduale chapter (shown for ritual kind only); chips are
+             built from the chapters present in the API response. -->
+        <div class="filter-group" id="chapter-filter" hidden>
+          <label class="filter-label">Chapter</label>
+          <div class="chips" id="chapter-chips"></div>
+        </div>
       </div>
       <div id="src-list-count"></div>
       <ul id="src-list"></ul>
     </aside>
 
-    <!-- Right panel: epoch assignment review -->
+    <!-- Right panel: composition workflow -->
     <main id="src-panel">
       <div id="src-empty-state">
-        <p>Select an epoch from the list to review its assignments</p>
+        <p>Select an epoch from the list to begin</p>
       </div>
 
       <div id="src-editor" hidden>
-        <div id="src-edit-col">
-          <div id="src-header">
-            <div id="src-title"></div>
-          </div>
 
-          <!-- Inherited assignments (from ancestor epochs, not overridden here) -->
-          <div id="inherited-section" hidden>
-            <div class="review-section-header">Inherited — not overridden at this epoch</div>
-            <div id="inherited-list"></div>
-          </div>
-
-          <!-- Per-part assignment sections -->
-          <div id="parts-section"></div>
+        <!-- Source config bar -->
+        <div id="compose-config">
+          <label class="cfg-label">Text source
+            <select id="cfg-text-source">
+              <option value="">(none)</option>
+            </select>
+          </label>
+          <label class="cfg-label">Chant source
+            <select id="cfg-chant-source">
+              <option value="">(none)</option>
+            </select>
+          </label>
         </div>
+
+        <div id="src-header">
+          <div id="src-title"></div>
+        </div>
+
+        <!-- Two-column body: content left, section images right -->
+        <div id="src-main-row">
+
+          <div id="src-content-col">
+
+            <!-- Compact part chips -->
+            <div id="part-chips-section">
+              <div class="review-section-header">Parts</div>
+              <div id="part-chips"></div>
+            </div>
+
+            <!-- Workflow panel: shown when a part is selected -->
+            <div id="compose-workflow" hidden>
+
+              <!-- Text pane -->
+              <div id="cw-text-pane" class="cw-pane">
+                <div class="pane-label">
+                  Text
+                  <select id="cw-text-option" class="cw-option-select" hidden></select>
+                  <span id="cw-text-found-at" class="cw-found-at"></span>
+                  <span id="cw-text-src-badge" class="cw-src-badge" hidden></span>
+                  <div class="cw-pane-actions">
+                    <button id="cw-copy-latin" class="btn-secondary btn-sm">Copy Latin</button>
+                    <button id="cw-copy-english" class="btn-secondary btn-sm">Copy English</button>
+                  </div>
+                </div>
+                <div class="cw-text-cols">
+                  <div class="cw-text-col">
+                    <div class="cw-text-lang">Latin</div>
+                    <div id="cw-latin" class="cw-text-body"></div>
+                  </div>
+                  <div class="cw-text-col">
+                    <div class="cw-text-lang">English</div>
+                    <div id="cw-english" class="cw-text-body"></div>
+                  </div>
+                </div>
+                <details id="cw-text-src-review" class="cw-src-review" hidden>
+                  <summary class="cw-src-review-label">Source Review</summary>
+                  <div class="cw-src-review-body">
+                    <div class="cw-src-review-controls">
+                      <span id="cw-text-src-id" class="cw-src-review-id"></span>
+                      <select id="cw-text-src-status">
+                        <option value="draft">draft</option>
+                        <option value="reviewed">reviewed</option>
+                        <option value="rejected">rejected</option>
+                        <option value="published">published</option>
+                      </select>
+                      <button id="cw-text-src-approve" class="btn-primary btn-sm">✓ Approve</button>
+                      <button id="cw-text-src-reject" class="btn-delete btn-sm">✗ Reject</button>
+                      <a id="cw-text-src-link" href="/sources" target="_blank" class="btn-secondary btn-sm">Open in Source Review</a>
+                      <span id="cw-text-src-msg" class="cw-src-msg"></span>
+                    </div>
+                    <div class="cw-src-textsrc-row">
+                      <input type="text" id="cw-text-src-textsrc" class="cw-src-textsrc-input" placeholder="Citation (text_src)…">
+                      <button id="cw-text-src-textsrc-save" class="btn-secondary btn-sm">Save</button>
+                      <span id="cw-text-src-textsrc-msg" class="cw-src-msg"></span>
+                    </div>
+                    <div id="cw-text-src-img-label" class="cw-src-img-label"></div>
+                    <div id="cw-text-src-img-wrap" class="cw-src-img-wrap">
+                      <img id="cw-text-src-img" alt="source page">
+                      <div id="cw-text-src-bbox" class="cw-src-bbox-overlay"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+
+              <!-- Chant pane -->
+              <div id="cw-chant-pane" class="cw-pane">
+                <div class="pane-label">
+                  Chant
+                  <select id="cw-chant-option" class="cw-option-select" hidden></select>
+                  <span id="cw-chant-found-at" class="cw-found-at"></span>
+                  <span id="cw-chant-src-badge" class="cw-src-badge" hidden></span>
+                  <div class="cw-pane-actions">
+                    <button id="cw-copy-gabc" class="btn-secondary btn-sm">Copy GABC</button>
+                    <button id="cw-find-similar" class="btn-secondary btn-sm">Find similar</button>
+                    <button id="cw-compose-btn" class="btn-primary btn-sm">Compose</button>
+                  </div>
+                </div>
+                <div id="cw-chant-meta" class="cw-chant-meta"></div>
+                <div id="cw-chant-engrav"></div>
+                <div id="cw-local-chants" hidden></div>
+                <details id="cw-chant-src-review" class="cw-src-review" hidden>
+                  <summary class="cw-src-review-label">Source Review</summary>
+                  <div class="cw-src-review-body">
+                    <div class="cw-src-review-controls">
+                      <span id="cw-chant-src-id" class="cw-src-review-id"></span>
+                      <select id="cw-chant-src-status">
+                        <option value="draft">draft</option>
+                        <option value="reviewed">reviewed</option>
+                        <option value="rejected">rejected</option>
+                        <option value="published">published</option>
+                      </select>
+                      <button id="cw-chant-src-approve" class="btn-primary btn-sm">✓ Approve</button>
+                      <button id="cw-chant-src-reject" class="btn-delete btn-sm">✗ Reject</button>
+                      <a id="cw-chant-src-link" href="/sources" target="_blank" class="btn-secondary btn-sm">Open in Source Review</a>
+                      <span id="cw-chant-src-msg" class="cw-src-msg"></span>
+                    </div>
+                    <div class="cw-src-textsrc-row">
+                      <input type="text" id="cw-chant-src-textsrc" class="cw-src-textsrc-input" placeholder="Citation (text_src)…">
+                      <button id="cw-chant-src-textsrc-save" class="btn-secondary btn-sm">Save</button>
+                      <span id="cw-chant-src-textsrc-msg" class="cw-src-msg"></span>
+                    </div>
+                    <div id="cw-chant-src-img-label" class="cw-src-img-label"></div>
+                    <div id="cw-chant-src-img-wrap" class="cw-src-img-wrap">
+                      <img id="cw-chant-src-img" alt="source page">
+                      <div id="cw-chant-src-bbox" class="cw-src-bbox-overlay"></div>
+                    </div>
+                  </div>
+                </details>
+              </div>
+            </div>
+
+          </div><!-- /#src-content-col -->
+
+          <!-- Section images: epoch-level, right column -->
+          <div id="src-images-col" hidden>
+            <div id="section-images"></div>
+          </div>
+
+        </div><!-- /#src-main-row -->
+
+        <!-- Composition panel: shown when Compose is clicked -->
+        <div id="compose-panel" hidden>
+          <div class="pane-label">
+            New composition
+            <button id="cp-cancel-btn" class="btn-secondary btn-sm" style="margin-left:auto">Cancel</button>
+          </div>
+          <div id="cp-form">
+
+            <!-- Chant group mode -->
+            <div class="cp-group-mode-row">
+              <fieldset class="cp-fieldset">
+                <legend>Chant group</legend>
+                <label class="cp-radio-label">
+                  <input type="radio" name="cp-group-mode" value="new"> New group
+                </label>
+                <label class="cp-radio-label">
+                  <input type="radio" name="cp-group-mode" value="derived" checked> Derived from source
+                </label>
+              </fieldset>
+              <div id="cp-canonical-name-wrap" class="cp-field-row">
+                <label class="cp-label">Group name
+                  <input type="text" id="cp-canonical-name" class="cp-input" placeholder="Canonical name for new group…">
+                </label>
+              </div>
+            </div>
+
+            <!-- Metadata fields -->
+            <div class="cp-fields-grid">
+              <label class="cp-label">Version
+                <input type="text" id="cp-version" class="cp-input" value="english">
+              </label>
+              <label class="cp-label">Incipit
+                <input type="text" id="cp-incipit" class="cp-input" placeholder="First words…">
+              </label>
+              <label class="cp-label">Office part
+                <input type="text" id="cp-office-part" class="cp-input" placeholder="in / gr / al…">
+              </label>
+              <label class="cp-label">Mode
+                <input type="text" id="cp-mode" class="cp-input" placeholder="1–8…" style="width:5rem">
+              </label>
+              <div class="cp-label" style="grid-column: 1 / -1">Translation sources
+                <div id="cp-translation-sources-list" class="cp-tsrc-list"></div>
+              </div>
+              <label class="cp-label">Text exact
+                <select id="cp-is-text-exact" class="cp-input">
+                  <option value="1">Verbatim</option>
+                  <option value="0">Adapted</option>
+                </select>
+              </label>
+              <label class="cp-label">Derived from UID
+                <input type="text" id="cp-derived-from-uid" class="cp-input" placeholder="gregobase:… or local:…">
+              </label>
+              <label class="cp-label">Transcriber
+                <input type="text" id="cp-transcriber" class="cp-input" value="Doctor J">
+              </label>
+              <label class="cp-label">Status
+                <select id="cp-status" class="cp-input">
+                  <option value="draft">Draft</option>
+                  <option value="reviewed">Reviewed</option>
+                  <option value="published">Published</option>
+                </select>
+              </label>
+            </div>
+
+            <!-- GABC editor -->
+            <div class="pane-label" style="margin-top:0.75rem">GABC</div>
+            <textarea id="cp-gabc" rows="10" spellcheck="false" placeholder="Paste or edit GABC here…"></textarea>
+
+            <div class="cp-save-row">
+              <button id="cp-save-btn" class="btn-primary">Save composition</button>
+              <span id="cp-msg"></span>
+            </div>
+          </div>
+        </div>
+
       </div>
     </main>
+  </div>
+
+  <!-- Find similar texts: modal overlay -->
+  <div id="similar-modal" class="sim-overlay" hidden>
+    <div id="sim-panel" class="sim-panel" role="dialog" aria-modal="true" aria-labelledby="sim-modal-title">
+      <div class="sim-header">
+        <span id="sim-modal-title" class="sim-title">Similar texts</span>
+        <button id="sim-close" class="sim-close" aria-label="Close">&times;</button>
+      </div>
+      <div class="sim-search-row">
+        <input type="text" id="sim-query" class="sim-query-input" placeholder="Latin text to match…">
+        <button id="sim-search-btn" class="btn-primary btn-sm">Search</button>
+      </div>
+      <div id="sim-status" class="sim-status"></div>
+      <ul id="sim-results" class="sim-results"></ul>
+    </div>
   </div>
 </div>
 

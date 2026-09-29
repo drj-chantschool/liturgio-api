@@ -5,6 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Liturgio — Source Review</title>
   <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/gr-index.css">
 </head>
 <body>
 <div id="app">
@@ -15,6 +16,9 @@
       <a href="/sources" class="active">Source Review</a>
       <a href="/assignments">Assignment Review</a>
       <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day">Day View</a>
     </nav>
     <div id="src-stats-badge"></div>
   </header>
@@ -25,16 +29,13 @@
       <div id="filter-area">
         <div class="filter-group">
           <label class="filter-label">Book</label>
-          <div class="chips" id="book-chips">
-            <button class="chip active" data-book="GRADUALE">Graduale (GR)</button>
-            <button class="chip" data-book="">All sources</button>
-          </div>
+          <div class="chips" id="book-chips"></div>
         </div>
         <div class="filter-group">
           <label class="filter-label">Status</label>
           <div class="chips" id="status-chips">
-            <button class="chip active" data-status="">All</button>
-            <button class="chip" data-status="draft">Draft</button>
+            <button class="chip" data-status="">All</button>
+            <button class="chip active" data-status="draft">Draft</button>
             <button class="chip" data-status="reviewed">Reviewed</button>
             <button class="chip" data-status="rejected">Rejected</button>
             <button class="chip" data-status="published">Published</button>
@@ -86,6 +87,7 @@
               <label>Wkday
                 <input type="number" id="se-wkday" min="1" max="7" placeholder="—">
               </label>
+              <span id="se-cycle" class="mgp-badge" hidden></span>
             </div>
             <div class="control-row">
               <label class="wide">Source citation (text_src)
@@ -119,7 +121,70 @@
             <button id="se-reject" class="btn-delete">✗ Reject</button>
             <button id="se-save" class="btn-secondary">Save edits</button>
             <button id="se-revert" class="btn-secondary">Revert</button>
+            <button id="se-browse-btn" class="btn-secondary">Browse gregobase…</button>
+            <button id="se-new-btn" class="btn-secondary">New chant…</button>
             <span id="se-status-msg"></span>
+          </div>
+
+          <!-- Browse gregobase panel -->
+          <div id="gri-browse-panel" hidden>
+            <div class="pane-label" id="gri-browse-panel-label">Browse chant groups</div>
+            <div id="gri-browse-controls">
+              <label>Part
+                <select id="gri-browse-part"></select>
+              </label>
+              <label>Letter
+                <select id="gri-browse-letter"></select>
+              </label>
+              <label id="gri-browse-letter2-wrap" hidden>2nd
+                <select id="gri-browse-letter2"></select>
+              </label>
+              <span id="gri-browse-msg"></span>
+              <button id="gri-browse-close-btn" class="btn-secondary btn-sm" style="margin-left:auto">Close</button>
+            </div>
+            <div id="gri-browse-body">
+              <ul id="gri-browse-list"></ul>
+              <div id="gri-browse-detail">
+                <div id="gri-browse-detail-meta"></div>
+                <div id="gri-browse-chant-list" hidden>
+                  <ul id="gri-browse-chant-ul"></ul>
+                </div>
+                <div id="gri-browse-detail-engrav"></div>
+                <div id="gri-browse-detail-actions" hidden>
+                  <button id="gri-browse-assign-btn" class="btn-primary btn-sm">Assign this</button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- New chant panel -->
+          <div id="gri-new-panel" hidden>
+            <div class="pane-label">Paste new chant GABC</div>
+            <div id="gri-new-form">
+              <div class="gri-new-row">
+                <label>Incipit
+                  <input type="text" id="gri-new-incipit" placeholder="Latin incipit…">
+                </label>
+                <label>Mode
+                  <input type="text" id="gri-new-mode" placeholder="e.g. 1" style="width:4rem">
+                </label>
+                <label>Version
+                  <input type="text" id="gri-new-version" value="latin" style="width:6rem">
+                </label>
+                <label>Chant group name
+                  <input type="text" id="gri-new-name" placeholder="(uses incipit if blank)" style="width:14rem">
+                </label>
+              </div>
+              <div class="pane-label" style="margin-top:0.5rem">GABC</div>
+              <textarea id="gri-new-gabc" spellcheck="false" rows="8" placeholder="Paste GABC here…"></textarea>
+              <div id="gri-new-preview"></div>
+              <div class="gri-new-row gri-new-actions">
+                <button id="gri-new-preview-btn" class="btn-secondary btn-sm">Preview</button>
+                <button id="gri-new-save-btn" class="btn-primary">Save &amp; assign</button>
+                <button id="gri-new-close-btn" class="btn-secondary btn-sm">Cancel</button>
+                <span id="gri-new-msg"></span>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -127,7 +192,15 @@
           <div class="pane-label" id="src-image-label">Page image</div>
           <div id="src-image-wrap">
             <img id="src-page-img" alt="source page">
-            <div id="src-bbox-overlay"><span class="bbox-label" id="se-bbox-label"></span></div>
+            <div id="src-bbox-overlay"></div>
+          </div>
+          <div class="pane-label" id="next-image-label" hidden></div>
+          <div id="next-image-wrap" hidden>
+            <img id="next-page-img" alt="next page">
+          </div>
+          <div class="pane-label" id="ref-image-label" hidden></div>
+          <div id="ref-image-wrap" hidden>
+            <img id="ref-page-img" alt="reference page">
           </div>
         </div>
       </div>

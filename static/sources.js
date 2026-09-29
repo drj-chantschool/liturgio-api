@@ -6,8 +6,14 @@ const state = {
   selected: null,       // currently shown source
   original: null,       // snapshot for revert
   parts: [],            // service_part reference
-  filters: { book: 'GR', status: '', q: '' },
+  filters: { book: '', status: 'draft', q: '' },
   bboxFilter: null,     // Set of text_ids when filtering by shared bbox; null = off
+  browse: {
+    groups: [],
+    selected: null,
+    chants: [],
+    selectedChant: null,
+  },
 };
 
 const $ = id => document.getElementById(id);
@@ -42,9 +48,46 @@ const seReject    = $('se-reject');
 const seSave      = $('se-save');
 const seRevert    = $('se-revert');
 const seMsg       = $('se-status-msg');
+const seCycle     = $('se-cycle');
+const seBrowseBtn = $('se-browse-btn');
+const seNewBtn    = $('se-new-btn');
+
+// Browse / new-chant panel refs
+const browsePanelEl         = $('gri-browse-panel');
+const browsePartSel         = $('gri-browse-part');
+const browseLetterSel       = $('gri-browse-letter');
+const browseLetterSel2Wrap  = $('gri-browse-letter2-wrap');
+const browseLetterSel2      = $('gri-browse-letter2');
+const browseCloseBtnEl      = $('gri-browse-close-btn');
+const browseMsgEl           = $('gri-browse-msg');
+const browseListEl          = $('gri-browse-list');
+const browseDetailMetaEl    = $('gri-browse-detail-meta');
+const browseChantListEl     = $('gri-browse-chant-list');
+const browseChantUl         = $('gri-browse-chant-ul');
+const browseDetailEngravEl  = $('gri-browse-detail-engrav');
+const browseDetailActionsEl = $('gri-browse-detail-actions');
+const browseAssignBtnEl     = $('gri-browse-assign-btn');
+const newPanelEl            = $('gri-new-panel');
+const newIncipitEl          = $('gri-new-incipit');
+const newModeEl             = $('gri-new-mode');
+const newVersionEl          = $('gri-new-version');
+const newNameEl             = $('gri-new-name');
+const newGabcEl             = $('gri-new-gabc');
+const newPreviewDivEl       = $('gri-new-preview');
+const newPreviewBtnEl       = $('gri-new-preview-btn');
+const newSaveBtnEl          = $('gri-new-save-btn');
+const newCloseBtnEl         = $('gri-new-close-btn');
+const newMsgEl              = $('gri-new-msg');
+
 const imgLabel    = $('src-image-label');
 const pageImg     = $('src-page-img');
 const bboxOverlay = $('src-bbox-overlay');
+const nextImgLabel = $('next-image-label');
+const nextImgWrap  = $('next-image-wrap');
+const nextPageImg  = $('next-page-img');
+const refImgLabel = $('ref-image-label');
+const refImgWrap  = $('ref-image-wrap');
+const refPageImg  = $('ref-page-img');
 
 // ── API helpers ──────────────────────────────────────────────────────────────
 async function api(path, opts) {
@@ -61,7 +104,7 @@ async function api(path, opts) {
 async function loadList() {
   const p = new URLSearchParams();
   if (state.filters.book)   p.set('book', state.filters.book);
-  if (state.filters.status) p.set('status', state.filters.status);
+  if (state.filters.status) p.set('review_status', state.filters.status);
   if (state.filters.q)      p.set('q', state.filters.q);
   // When viewing "all sources", restrict to provenanced rows (those reviewable
   // against a page image); GR filter already implies provenance.
@@ -93,12 +136,12 @@ function renderList() {
   srcListCount.textContent = `${state.sources.length} source(s)`;
   let lastPage = null;
   for (const s of visible) {
-    const pageKey = `${s.book || '—'}/${s.pdf_page_num || '—'}`;
+    const pageKey = `${s.book || '—'}/${s.printed_page_num || '—'}`;
     if (pageKey !== lastPage) {
       const hdr = document.createElement('li');
       hdr.className = 'src-page-hdr';
       hdr.textContent = s.book
-        ? `${s.book} p.${s.pdf_page_num}` + (s.printed_page_num ? ` (printed ${s.printed_page_num})` : '')
+        ? `${s.book} p.${s.printed_page_num}`
         : 'no page provenance';
       srcList.appendChild(hdr);
       lastPage = pageKey;
@@ -111,7 +154,7 @@ function renderList() {
     li.innerHTML =
       `<span class="src-part part-${s.service_part}">${escapeHtml(partLabel)}</span>` +
       `<span class="src-incipit">${escapeHtml(incipit)}</span>` +
-      `<span class="src-status status-${s.status}">${s.status}</span>`;
+      `<span class="src-status status-${s.review_status}">${s.review_status}</span>`;
     li.addEventListener('click', () => selectSource(s.text_id));
     srcList.appendChild(li);
   }
@@ -119,7 +162,7 @@ function renderList() {
 
 function renderStats() {
   const counts = {};
-  for (const s of state.sources) counts[s.status] = (counts[s.status] || 0) + 1;
+  for (const s of state.sources) counts[s.review_status] = (counts[s.review_status] || 0) + 1;
   const parts = Object.entries(counts).map(([k, v]) => `${v} ${k}`).join(' · ');
   statsBadge.textContent = `${state.sources.length} shown${parts ? ' — ' + parts : ''}`;
 }
@@ -188,18 +231,24 @@ function selectSource(textId) {
   seMsg.textContent = '';
 
   srcTitle.textContent = `#${s.text_id} · ${s.service_part.toUpperCase()}`;
-  srcMeta.textContent = [s.epoch_title, s.assignment_authority_code]
+  srcMeta.textContent = [s.epoch_title, s.book]
     .filter(Boolean).join(' · ');
 
-  seStatus.value = s.status;
+  seStatus.value = s.review_status;
   sePart.value = s.service_part;
   seEpoch.value = s.lit_epoch_slug || '';
   seWkday.value = s.wkday == null ? '' : s.wkday;
+  const cycleStr = s.cycle_sun != null
+    ? 'cycle ' + ['C','A','B'][s.cycle_sun % 3]
+    : s.cycle_wkday != null
+      ? 'cycle ' + ['II','I'][s.cycle_wkday % 2]
+      : '';
+  seCycle.textContent = cycleStr;
+  seCycle.hidden = !cycleStr;
   seTextsrc.value = s.text_src || '';
   seOriginal.value = s.original_text || '';
   seVernacular.value = s.vernacular_text || '';
   seBbox.value = s.bbox || '';
-  $('se-bbox-label').textContent = s.part_display_name || s.service_part;
 
   loadPageImage(s);
   drawSiblingOverlays();
@@ -207,17 +256,40 @@ function selectSource(textId) {
 }
 
 function loadPageImage(s) {
-  if (s.book && s.pdf_page_num != null) {
-    imgLabel.textContent =
-      `${s.book} p.${s.pdf_page_num}` +
-      (s.printed_page_num ? ` (printed ${s.printed_page_num})` : '');
-    pageImg.src = `/api/books/${encodeURIComponent(s.book)}/${s.pdf_page_num}/image`;
+  if (s.book && s.printed_page_num != null) {
+    imgLabel.textContent = `${s.book} p.${s.printed_page_num}`;
+    pageImg.src = `/api/books/${encodeURIComponent(s.book)}/${s.printed_page_num}/image`;
     pageImg.style.display = '';
   } else {
     imgLabel.textContent = 'No page image (text-only source)';
     pageImg.removeAttribute('src');
     pageImg.style.display = 'none';
     bboxOverlay.style.display = 'none';
+  }
+
+  // printed_page_num is a string (books.printed_page_num is a VARCHAR), so it has
+  // to be coerced before arithmetic: '15' + 1 is '151', not 16.
+  const nextPage = Number(s.printed_page_num) + 1;
+  if (s.book && s.printed_page_num != null && Number.isFinite(nextPage)) {
+    nextImgLabel.textContent = `${s.book} p.${nextPage}`;
+    nextImgLabel.hidden = false;
+    nextPageImg.src = `/api/books/${encodeURIComponent(s.book)}/${nextPage}/image`;
+    nextImgWrap.hidden = false;
+  } else {
+    nextImgLabel.hidden = true;
+    nextImgWrap.hidden = true;
+    nextPageImg.removeAttribute('src');
+  }
+
+  if (s.book && s.ref_printed_page_num != null) {
+    refImgLabel.textContent = `${s.book} p.${s.ref_printed_page_num}`;
+    refImgLabel.hidden = false;
+    refPageImg.src = `/api/books/${encodeURIComponent(s.book)}/${s.ref_printed_page_num}/image`;
+    refImgWrap.hidden = false;
+  } else {
+    refImgLabel.hidden = true;
+    refImgWrap.hidden = true;
+    refPageImg.removeAttribute('src');
   }
 }
 
@@ -253,8 +325,8 @@ function drawSiblingOverlays() {
   imageWrap.querySelectorAll('.sibling-bbox').forEach(el => el.remove());
 
   if (!state.selected || !pageImg.naturalWidth || pageImg.style.display === 'none') return;
-  const { book, pdf_page_num, text_id } = state.selected;
-  if (!book || pdf_page_num == null) return;
+  const { book, printed_page_num, text_id } = state.selected;
+  if (!book || printed_page_num == null) return;
 
   const scale = pageImg.clientWidth / pageImg.naturalWidth;
   const ox = pageImg.offsetLeft;
@@ -262,17 +334,13 @@ function drawSiblingOverlays() {
 
   for (const s of state.sources) {
     if (s.text_id === text_id) continue;
-    if (s.book !== book || s.pdf_page_num !== pdf_page_num) continue;
+    if (s.book !== book || s.printed_page_num !== printed_page_num) continue;
     const box = parseBbox(s.bbox);
     if (!box) continue;
     const [x0, y0, x1, y1] = box;
     const div = document.createElement('div');
-    div.className = `sibling-bbox status-${s.status}`;
+    div.className = `sibling-bbox status-${s.review_status}`;
     div.title = `#${s.text_id} ${s.part_display_name || s.service_part}`;
-    const lbl = document.createElement('span');
-    lbl.className = 'bbox-label';
-    lbl.textContent = s.part_display_name || s.service_part;
-    div.appendChild(lbl);
     div.style.left   = (ox + x0 * scale) + 'px';
     div.style.top    = (oy + y0 * scale) + 'px';
     div.style.width  = ((x1 - x0) * scale) + 'px';
@@ -292,8 +360,8 @@ imageWrapEl.addEventListener('click', e => {
   if (bboxOverlay.contains(e.target)) return;
   if (!state.selected || !pageImg.naturalWidth || pageImg.style.display === 'none') return;
 
-  const { book, pdf_page_num, text_id } = state.selected;
-  if (!book || pdf_page_num == null) return;
+  const { book, printed_page_num, text_id } = state.selected;
+  if (!book || printed_page_num == null) return;
 
   // Convert click position to natural image coordinates
   const scale = pageImg.clientWidth / pageImg.naturalWidth;
@@ -306,7 +374,7 @@ imageWrapEl.addEventListener('click', e => {
   // Find siblings whose bbox contains the click point
   const hits = state.sources.filter(s => {
     if (s.text_id === text_id) return false;
-    if (s.book !== book || s.pdf_page_num !== pdf_page_num) return false;
+    if (s.book !== book || s.printed_page_num !== printed_page_num) return false;
     const box = parseBbox(s.bbox);
     if (!box) return false;
     const [x0, y0, x1, y1] = box;
@@ -392,7 +460,7 @@ function onBboxPointerUp() {
 function buildPayload() {
   const wkRaw = seWkday.value.trim();
   return {
-    status: seStatus.value,
+    review_status: seStatus.value,
     service_part: sePart.value,
     lit_epoch_slug: seEpoch.value.trim() || null,
     wkday: wkRaw === '' ? null : parseInt(wkRaw, 10),
@@ -422,7 +490,7 @@ async function save(newStatus) {
     seMsg.textContent = '✓ Saved';
     renderList();
     renderStats();
-    srcMeta.textContent = [updated.epoch_title, updated.assignment_authority_code]
+    srcMeta.textContent = [updated.epoch_title, updated.book]
       .filter(Boolean).join(' · ');
   } catch (e) {
     seMsg.textContent = 'Error: ' + e.message;
@@ -467,6 +535,29 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
+async function loadBooks() {
+  let books = [];
+  try { books = await api('/api/lit_part_sources/books'); } catch (_) {}
+  bookChips.innerHTML = '';
+  for (const b of books) {
+    const btn = document.createElement('button');
+    btn.className = 'chip';
+    btn.dataset.book = b;
+    btn.textContent = b;
+    bookChips.appendChild(btn);
+  }
+  const allBtn = document.createElement('button');
+  allBtn.className = 'chip';
+  allBtn.dataset.book = '';
+  allBtn.textContent = 'All sources';
+  bookChips.appendChild(allBtn);
+  // Default to first book
+  const defaultBook = books[0] ?? '';
+  state.filters.book = defaultBook;
+  const active = bookChips.querySelector(`[data-book="${CSS.escape(defaultBook)}"]`);
+  if (active) active.classList.add('active');
+}
+
 async function loadParts() {
   try {
     state.parts = await api('/api/service_parts');
@@ -480,9 +571,293 @@ async function loadParts() {
   }
 }
 
+// ── Browse / new-chant panels ─────────────────────────────────────────────────
+function extractGabcBody(gabc) {
+  if (!gabc) return '';
+  const parts = gabc.split('%%');
+  return parts.length > 1 ? parts[parts.length - 1].trim() : gabc.trim();
+}
+
+function hidePanels() {
+  browsePanelEl.hidden = true;
+  newPanelEl.hidden = true;
+}
+
+async function loadBrowseParts() {
+  try {
+    const parts = await api('/api/gregobase_parts');
+    browsePartSel.innerHTML = '';
+    for (const p of parts) {
+      const opt = document.createElement('option');
+      opt.value = p;
+      opt.textContent = p;
+      browsePartSel.appendChild(opt);
+    }
+    await loadBrowseLetters();
+  } catch (_) {}
+}
+
+async function loadBrowseLetters() {
+  const part = browsePartSel.value;
+  if (!part) return;
+  try {
+    const letters = await api('/api/gregobase_letters?part=' + encodeURIComponent(part));
+    const prev = browseLetterSel.value;
+    browseLetterSel.innerHTML = '';
+    for (const l of letters) {
+      const opt = document.createElement('option');
+      opt.value = l;
+      opt.textContent = l;
+      browseLetterSel.appendChild(opt);
+    }
+    if (letters.includes(prev)) browseLetterSel.value = prev;
+  } catch (_) {}
+  await loadBrowseLetter2();
+}
+
+async function loadBrowseLetter2() {
+  const part = browsePartSel.value;
+  const letter = browseLetterSel.value;
+  if (!part || !letter) { browseLetterSel2Wrap.hidden = true; return; }
+  try {
+    const sub = await api('/api/gregobase_letters?part=' + encodeURIComponent(part) + '&prefix=' + encodeURIComponent(letter));
+    if (sub.length > 1) {
+      const prev = browseLetterSel2.value;
+      browseLetterSel2.innerHTML = '';
+      for (const l of sub) {
+        const opt = document.createElement('option');
+        opt.value = l;
+        opt.textContent = l;
+        browseLetterSel2.appendChild(opt);
+      }
+      if (sub.includes(prev)) browseLetterSel2.value = prev;
+      browseLetterSel2Wrap.hidden = false;
+    } else {
+      browseLetterSel2Wrap.hidden = true;
+    }
+  } catch (_) { browseLetterSel2Wrap.hidden = true; }
+}
+
+async function runBrowseLoad() {
+  const part = browsePartSel.value;
+  const prefix = browseLetterSel2Wrap.hidden ? browseLetterSel.value : browseLetterSel2.value;
+  if (!part || !prefix) return;
+  browseMsgEl.textContent = 'Loading…';
+  browseListEl.innerHTML = '';
+  clearBrowseDetail();
+  state.browse.groups = [];
+  state.browse.selected = null;
+  try {
+    const p = new URLSearchParams({ part, prefix, limit: '300' });
+    state.browse.groups = await api('/api/gr_index_browse?' + p.toString());
+    browseMsgEl.textContent = `${state.browse.groups.length} group(s)`;
+    renderBrowseList();
+  } catch (e) {
+    browseMsgEl.textContent = 'Error: ' + e.message;
+  }
+}
+
+function renderBrowseList() {
+  browseListEl.innerHTML = '';
+  if (!state.browse.groups.length) {
+    const li = document.createElement('li');
+    li.className = 'gri-browse-empty';
+    li.textContent = 'No groups found.';
+    browseListEl.appendChild(li);
+    return;
+  }
+  for (const g of state.browse.groups) {
+    const li = document.createElement('li');
+    li.className = 'gri-browse-list-item';
+    li.dataset.gid = g.chant_group_id;
+    li.textContent = g.incipit || g.canonical_name || `group ${g.chant_group_id}`;
+    li.addEventListener('click', () => selectBrowseGroup(g));
+    browseListEl.appendChild(li);
+  }
+}
+
+async function selectBrowseGroup(g) {
+  state.browse.selected = g;
+  state.browse.chants = [];
+  state.browse.selectedChant = null;
+  browseListEl.querySelectorAll('.gri-browse-list-item').forEach(li => {
+    li.classList.toggle('active', li.dataset.gid == g.chant_group_id);
+  });
+  browseDetailMetaEl.innerHTML =
+    `<strong>${escapeHtml(g.incipit || g.canonical_name || '')}</strong>`;
+  browseChantUl.innerHTML = '<li class="gri-browse-empty">Loading…</li>';
+  browseChantListEl.hidden = false;
+  browseDetailEngravEl.innerHTML = '';
+  browseDetailActionsEl.hidden = true;
+  try {
+    state.browse.chants = await api(`/api/chant_groups/${g.chant_group_id}/gregobase_chants`);
+  } catch (_) { state.browse.chants = []; }
+  if (!state.browse.chants.length && g.best_gregobase_id) {
+    state.browse.chants = [{ gregobase_id: g.best_gregobase_id, mode: g.best_mode,
+      version: g.best_version, gabc_body: g.best_gabc_body }];
+  }
+  renderBrowseChantList();
+  if (state.browse.chants.length === 1) selectBrowseChant(state.browse.chants[0]);
+}
+
+function renderBrowseChantList() {
+  const chants = state.browse.chants;
+  browseChantUl.innerHTML = '';
+  if (!chants.length) {
+    browseChantListEl.hidden = true;
+    return;
+  }
+  if (chants.length === 1) { browseChantListEl.hidden = true; return; }
+  browseChantListEl.hidden = false;
+  for (const c of chants) {
+    const li = document.createElement('li');
+    li.className = 'gri-browse-chant-item';
+    li.dataset.gbid = c.gregobase_id;
+    li.innerHTML =
+      `<span class="gri-chant-version">${escapeHtml(c.version || '—')}</span>` +
+      (c.mode ? ` <span class="mgp-badge">mode ${escapeHtml(c.mode)}</span>` : '') +
+      ` <span class="gri-gb-id">#${c.gregobase_id}</span>`;
+    li.addEventListener('click', () => selectBrowseChant(c));
+    browseChantUl.appendChild(li);
+  }
+}
+
+function selectBrowseChant(c) {
+  state.browse.selectedChant = c;
+  browseChantUl.querySelectorAll('.gri-browse-chant-item').forEach(li => {
+    li.classList.toggle('active', li.dataset.gbid == c.gregobase_id);
+  });
+  browseDetailEngravEl.innerHTML = '';
+  if (c.gabc_body) renderGabc(c.gabc_body, browseDetailEngravEl);
+  else browseDetailEngravEl.innerHTML = '<em class="render-note">No GABC</em>';
+  browseDetailActionsEl.hidden = false;
+}
+
+function clearBrowseDetail() {
+  browseDetailMetaEl.innerHTML = '';
+  browseChantUl.innerHTML = '';
+  browseChantListEl.hidden = true;
+  browseDetailEngravEl.innerHTML = '';
+  browseDetailActionsEl.hidden = true;
+  state.browse.chants = [];
+  state.browse.selectedChant = null;
+}
+
+browseCloseBtnEl.addEventListener('click', () => { browsePanelEl.hidden = true; });
+browseLetterSel.addEventListener('change', async () => { await loadBrowseLetter2(); runBrowseLoad(); });
+browseLetterSel2.addEventListener('change', runBrowseLoad);
+browsePartSel.addEventListener('change', async () => {
+  await loadBrowseLetters();
+  runBrowseLoad();
+});
+
+browseAssignBtnEl.addEventListener('click', async () => {
+  if (!state.selected || !state.browse.selectedChant) return;
+  browseMsgEl.textContent = 'Assigning…';
+  const gregobaseId = state.browse.selectedChant.gregobase_id;
+  try {
+    const updated = await api(`/api/lit_part_sources/${state.selected.text_id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ chant_uuid: `gregobase:${gregobaseId}` }),
+    });
+    const idx = state.sources.findIndex(x => x.text_id === updated.text_id);
+    if (idx !== -1) state.sources[idx] = updated;
+    state.selected = updated;
+    state.original = { ...updated };
+    browsePanelEl.hidden = true;
+    seMsg.textContent = `✓ Assigned gregobase:${gregobaseId}`;
+    loadChantEngraving(updated);
+  } catch (e) {
+    browseMsgEl.textContent = 'Error: ' + e.message;
+  }
+});
+
+seBrowseBtn.addEventListener('click', async () => {
+  hidePanels();
+  browsePanelEl.hidden = false;
+  if (state.selected?.service_part) browsePartSel.value = state.selected.service_part;
+  await loadBrowseLetters();
+  runBrowseLoad();
+});
+
+newCloseBtnEl.addEventListener('click', () => { newPanelEl.hidden = true; });
+
+newPreviewBtnEl.addEventListener('click', () => {
+  const body = extractGabcBody(newGabcEl.value.trim());
+  if (body) renderGabc(body, newPreviewDivEl);
+  else newPreviewDivEl.innerHTML = '<em class="render-note">No GABC to preview</em>';
+});
+
+newSaveBtnEl.addEventListener('click', async () => {
+  if (!state.selected) return;
+  const gabc = newGabcEl.value.trim();
+  if (!gabc) { newMsgEl.textContent = 'GABC cannot be empty.'; return; }
+  newMsgEl.textContent = 'Saving…';
+  newSaveBtnEl.disabled = true;
+  try {
+    await api(`/api/lit_part_assignments/${state.selected.text_id}/local_chant`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        gabc,
+        incipit: newIncipitEl.value.trim() || null,
+        mode: newModeEl.value.trim() || null,
+        version: newVersionEl.value.trim() || 'latin',
+        canonical_name: newNameEl.value.trim() || null,
+      }),
+    });
+    // Re-fetch the source to get updated chant_uuid
+    const textId = state.selected.text_id;
+    const updated = await api(`/api/lit_part_sources/${textId}`);
+    const idx = state.sources.findIndex(x => x.text_id === textId);
+    if (idx !== -1) state.sources[idx] = updated;
+    state.selected = updated;
+    state.original = { ...updated };
+    newPanelEl.hidden = true;
+    seMsg.textContent = '✓ New local chant created and assigned';
+    loadChantEngraving(updated);
+  } catch (e) {
+    newMsgEl.textContent = 'Error: ' + e.message;
+  } finally {
+    newSaveBtnEl.disabled = false;
+  }
+});
+
+seNewBtn.addEventListener('click', () => {
+  hidePanels();
+  newIncipitEl.value = state.selected ? (state.selected.original_text || '').slice(0, 60) : '';
+  newModeEl.value = '';
+  newVersionEl.value = 'latin';
+  newNameEl.value = '';
+  newGabcEl.value = '';
+  newPreviewDivEl.innerHTML = '';
+  newMsgEl.textContent = '';
+  newPanelEl.hidden = false;
+  newGabcEl.focus();
+});
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 (async function init() {
   buildHandles();
-  await loadParts();
+  await Promise.all([loadParts(), loadBrowseParts(), loadBooks()]);
   await loadList();
+
+  // Select a source via URL hash (e.g. /sources#123) — used by assignment review links
+  const hashId = parseInt(window.location.hash.slice(1), 10);
+  if (!isNaN(hashId)) {
+    const exists = state.sources.find(s => s.text_id === hashId);
+    if (exists) {
+      selectSource(hashId);
+    } else {
+      // Source may not be in the current filter — fetch it directly
+      try {
+        const src = await api(`/api/lit_part_sources/${hashId}`);
+        state.sources = [src, ...state.sources];
+        renderList();
+        renderStats();
+        selectSource(hashId);
+      } catch (_) {}
+    }
+  }
 })();

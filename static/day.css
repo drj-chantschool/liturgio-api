@@ -1,0 +1,280 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   Day View (day.html / day.js)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+.day-main {
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* ── Date navigation bar ───────────────────────────────────────────────── */
+#date-bar {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  padding: 0.6rem 1.2rem;
+  background: var(--editor-bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  flex-wrap: wrap;
+}
+
+#date-nav-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+#date-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.5rem;
+  font-size: 0.85rem;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+#date-input:focus { border-color: var(--accent-lt); }
+
+#date-display {
+  font-size: 0.95rem;
+  color: var(--text);
+  flex: 1;
+}
+
+#jurisdiction-picker {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+
+/* ── Observance tabs ───────────────────────────────────────────────────── */
+#observance-tabs {
+  padding: 0.6rem 1.2rem;
+  background: var(--preview-bg);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  gap: 0.5rem;
+}
+
+.observance-tab {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0.1rem;
+  padding: 0.4rem 0.8rem;
+  background: var(--editor-bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  max-width: 260px;
+}
+.observance-tab .tab-title,
+.observance-tab .tab-role {
+  white-space: normal;
+  overflow-wrap: break-word;
+}
+.observance-tab:hover { border-color: var(--accent); }
+.observance-tab.active {
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #fff;
+}
+.observance-tab .tab-title { font-size: 0.85rem; font-weight: 500; }
+.observance-tab .tab-rank {
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  opacity: 0.75;
+}
+.observance-tab .tab-role {
+  font-size: 0.65rem;
+  font-style: italic;
+  opacity: 0.75;
+}
+
+/* ── Content pane ──────────────────────────────────────────────────────── */
+#day-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0;
+}
+#day-content::-webkit-scrollbar { width: 8px; }
+#day-content::-webkit-scrollbar-thumb { background: var(--border); border-radius: 4px; }
+
+.day-empty-state {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+#observance-header {
+  padding: 0.9rem 1.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--editor-bg);
+}
+#observance-title { font-size: 1.3rem; color: var(--text); }
+#observance-meta {
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  margin-top: 0.25rem;
+  font-family: 'Courier New', monospace;
+}
+
+#formulary-tabs {
+  padding: 0.6rem 1.5rem 0;
+  gap: 0.4rem;
+}
+
+.formulary-tab {
+  padding: 0.28rem 0.7rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  color: var(--text-muted);
+  font-size: 0.78rem;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all 0.12s;
+}
+.formulary-tab:hover { border-color: var(--accent); color: var(--accent); }
+.formulary-tab.active {
+  background: var(--accent-lt);
+  border-color: var(--accent-lt);
+  color: #1a1815;
+}
+
+#service-groups {
+  padding: 0.8rem 1.5rem 2rem;
+  display: flex;
+  flex-direction: column;
+  gap: 1.2rem;
+}
+
+.service-group-header {
+  font-size: 0.78rem;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  padding-bottom: 0.35rem;
+  border-bottom: 1px solid var(--border);
+  margin-bottom: 0.6rem;
+}
+
+.part-row {
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--editor-bg);
+  margin-bottom: 0.7rem;
+  overflow: hidden;
+}
+
+.part-row-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.4rem 0.75rem;
+  background: #f0ebe0;
+  border-bottom: 1px solid var(--border);
+}
+
+.part-code {
+  display: inline-block;
+  padding: 0.08rem 0.4rem;
+  border-radius: 2px;
+  font-size: 0.65rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+.part-code.part-in { background: #3a2e1a; color: #c8a05a; }
+.part-code.part-gr { background: #1a2e3a; color: #5a90c8; }
+.part-code.part-al { background: #1a3a1a; color: #5ac85a; }
+.part-code.part-tr { background: #2e1a3a; color: #a05ac8; }
+.part-code.part-of { background: #3a1a2e; color: #c85aa0; }
+.part-code.part-co { background: #1a2a3a; color: #5aaac8; }
+
+.part-name { font-size: 0.88rem; color: var(--text); }
+.part-option {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+.part-authority {
+  margin-left: auto;
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  font-family: 'Courier New', monospace;
+}
+
+.part-notation-col {
+  padding: 0.6rem 0.9rem;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.part-col-label {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  font-size: 0.63rem;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: var(--text-muted);
+  margin-bottom: 0.3rem;
+}
+
+.part-version-select {
+  margin-left: auto;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.1rem 0.35rem;
+  font-size: 0.68rem;
+  font-family: inherit;
+  text-transform: none;
+  letter-spacing: normal;
+  color: var(--text);
+  cursor: pointer;
+  max-width: 60%;
+}
+.part-version-select:focus { border-color: var(--accent-lt); }
+
+.part-notation-body svg { max-width: 100%; height: auto; display: block; }
+
+.part-notes {
+  padding: 0.35rem 0.9rem 0.5rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+  border-top: 1px solid #ede5d8;
+}
+
+/* ── Right-click "Edit chant" menu (local chants only) ────────────────────── */
+#chant-context-menu {
+  position: absolute;
+  z-index: 1000;
+  background: var(--editor-bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  box-shadow: 0 2px 10px rgba(0, 0, 0, 0.2);
+  padding: 0.25rem;
+  min-width: 140px;
+}
+.ctx-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  background: none;
+  border: none;
+  padding: 0.4rem 0.7rem;
+  font-size: 0.82rem;
+  font-family: inherit;
+  color: var(--text);
+  cursor: pointer;
+  border-radius: 3px;
+}
+.ctx-menu-item:hover { background: var(--preview-bg); color: var(--accent); }

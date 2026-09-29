@@ -1,0 +1,379 @@
+/* ══════════════════════════════════════════════════════════════════════════
+   GR Index Review page (gr-index.html / gr-index.js)
+   ══════════════════════════════════════════════════════════════════════════ */
+
+/* ── Panel layout ────────────────────────────────────────────────────────── */
+#gri-panel {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+#gri-empty-state {
+  padding: 3rem 2rem;
+  text-align: center;
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.9rem;
+}
+
+#gri-editor {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  overflow-y: auto;
+  background: var(--editor-bg);
+}
+#gri-editor::-webkit-scrollbar { width: 6px; }
+#gri-editor::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+/* ── Header ──────────────────────────────────────────────────────────────── */
+#gri-header {
+  padding: 0.6rem 1rem 0.45rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+#gri-title { font-size: 1.05rem; color: var(--text); }
+#gri-meta {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  margin-top: 0.15rem;
+  font-family: 'Courier New', monospace;
+}
+
+/* ── Images row ──────────────────────────────────────────────────────────── */
+#gri-images-row {
+  display: flex;
+  gap: 0;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  height: 420px;
+  overflow: hidden;
+}
+
+.gri-img-box {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  border-right: 1px solid var(--border);
+}
+.gri-img-box:last-child { border-right: none; }
+
+.gri-img-wrap {
+  flex: 1;
+  overflow: auto;
+  padding: 0.4rem;
+  background: var(--preview-bg);
+}
+.gri-img-wrap::-webkit-scrollbar { width: 6px; height: 6px; }
+.gri-img-wrap::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.gri-img-wrap img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border: 1px solid var(--border);
+  background: #fff;
+}
+
+/* ── Assignment display ──────────────────────────────────────────────────── */
+#gri-assignment-area {
+  padding: 0.6rem 1rem 0.5rem;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.gri-assign-none {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.85rem;
+  padding: 0.3rem 0;
+}
+
+#gri-assign-meta {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+  font-family: 'Courier New', monospace;
+  margin-bottom: 0.4rem;
+}
+
+#gri-assign-engraving {
+  overflow-x: auto;
+  max-height: 180px;
+  overflow-y: auto;
+}
+#gri-assign-engraving svg { max-width: 100%; height: auto; display: block; }
+
+/* ── Action bar ──────────────────────────────────────────────────────────── */
+#gri-actions {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.55rem 1rem;
+  border-bottom: 1px solid var(--border);
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+#gri-msg {
+  font-size: 0.76rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* ── Browse panel ────────────────────────────────────────────────────────── */
+#gri-browse-panel {
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+#gri-browse-controls {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  padding: 0.5rem 1rem;
+  flex-wrap: wrap;
+  border-bottom: 1px solid var(--border);
+  background: #faf5eb;
+  flex-shrink: 0;
+}
+#gri-browse-controls label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+#gri-browse-controls select {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.22rem 0.4rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+}
+#gri-browse-controls select:focus { border-color: var(--accent-lt); }
+#gri-browse-msg {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+/* Two-column body */
+#gri-browse-body {
+  display: flex;
+  height: 400px;
+  overflow: hidden;
+}
+
+#gri-browse-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  width: 220px;
+  flex-shrink: 0;
+  overflow-y: auto;
+  border-right: 1px solid var(--border);
+  background: var(--bg);
+}
+#gri-browse-list::-webkit-scrollbar { width: 5px; }
+#gri-browse-list::-webkit-scrollbar-thumb { background: var(--border); border-radius: 3px; }
+
+.gri-browse-list-item {
+  padding: 0.3rem 0.65rem;
+  font-size: 0.8rem;
+  color: var(--text);
+  cursor: pointer;
+  border-bottom: 1px solid var(--border);
+  user-select: none;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.gri-browse-list-item:hover { background: #f0ebe0; }
+.gri-browse-list-item.active { background: #dfd8c8; font-weight: 600; }
+
+.gri-browse-empty {
+  color: var(--text-muted);
+  font-style: italic;
+  font-size: 0.82rem;
+  padding: 0.5rem 0.65rem;
+}
+
+/* Right side of two-column body */
+#gri-browse-detail {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+#gri-browse-detail-meta {
+  padding: 0.4rem 0.75rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+  font-family: 'Courier New', monospace;
+}
+/* Chant sub-list inside detail pane */
+#gri-browse-chant-list {
+  flex-shrink: 0;
+  max-height: 130px;
+  overflow-y: auto;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+}
+#gri-browse-chant-ul {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+}
+.gri-browse-chant-item {
+  padding: 0.25rem 0.75rem;
+  font-size: 0.78rem;
+  cursor: pointer;
+  border-bottom: 1px solid #f0ebe0;
+  display: flex;
+  gap: 0.4rem;
+  align-items: baseline;
+  user-select: none;
+}
+.gri-browse-chant-item:hover { background: #f0ebe0; }
+.gri-browse-chant-item.active { background: #dfd8c8; font-weight: 600; }
+.gri-chant-version { font-style: italic; color: var(--text-muted); }
+
+#gri-browse-detail-engrav {
+  flex: 1;
+  overflow-y: auto;
+  overflow-x: auto;
+  padding: 0.5rem 0.75rem;
+  background: var(--preview-bg);
+}
+#gri-browse-detail-engrav svg { max-width: 100%; height: auto; display: block; }
+#gri-browse-detail-engrav .render-note {
+  font-size: 0.8rem;
+  color: var(--text-muted);
+}
+#gri-browse-detail-actions {
+  padding: 0.4rem 0.75rem;
+  border-top: 1px solid var(--border);
+  flex-shrink: 0;
+  background: #faf5eb;
+}
+
+.gri-gb-id {
+  font-size: 0.65rem;
+  color: #b0a090;
+  font-family: 'Courier New', monospace;
+}
+
+/* ── New chant panel ─────────────────────────────────────────────────────── */
+#gri-new-panel {
+  flex-shrink: 0;
+  border-bottom: 1px solid var(--border);
+}
+#gri-new-form {
+  padding: 0.5rem 1rem 0.75rem;
+  background: #faf5eb;
+}
+.gri-new-row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  flex-wrap: wrap;
+  margin-bottom: 0.4rem;
+}
+.gri-new-row > label {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.78rem;
+  color: var(--text-muted);
+}
+.gri-new-row input[type="text"] {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 3px;
+  padding: 0.22rem 0.5rem;
+  font-size: 0.8rem;
+  font-family: inherit;
+  color: var(--text);
+  outline: none;
+  min-width: 10rem;
+}
+.gri-new-row input:focus { border-color: var(--accent-lt); }
+.gri-new-actions { margin-top: 0.5rem; }
+#gri-new-msg {
+  font-size: 0.75rem;
+  color: var(--text-muted);
+  font-style: italic;
+}
+
+#gri-new-gabc {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.5rem 0.6rem;
+  font-family: 'Courier New', Courier, monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  resize: vertical;
+  background: var(--editor-bg);
+  color: var(--text);
+  outline: none;
+  margin-top: 0.25rem;
+}
+#gri-new-gabc:focus { border-color: var(--accent-lt); }
+
+#gri-new-preview {
+  margin-top: 0.5rem;
+  overflow-x: auto;
+}
+#gri-new-preview svg { max-width: 100%; height: auto; display: block; }
+
+/* ── List item badges ────────────────────────────────────────────────────── */
+.gri-part-badge {
+  display: inline-block;
+  min-width: 2.1rem;
+  text-align: center;
+  padding: 0.07rem 0.3rem;
+  border-radius: 2px;
+  font-size: 0.62rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+.part-int { background: #3a2e1a; color: #c8a05a; }
+.part-com { background: #1a2a3a; color: #5aaac8; }
+.part-all { background: #1a3a1a; color: #5ac85a; }
+.part-gra { background: #1a2e3a; color: #5a90c8; }
+.part-off { background: #3a1a2e; color: #c85aa0; }
+.part-ant { background: #2e1a3a; color: #a05ac8; }
+.part-tra { background: #3a2e1a; color: #c89a5a; }
+.part-hym { background: #1a3a2e; color: #5ac8a0; }
+
+.gri-mode-badge {
+  display: inline-block;
+  min-width: 1rem;
+  font-size: 0.62rem;
+  color: #6a5a48;
+  font-family: 'Courier New', monospace;
+  flex-shrink: 0;
+}
+
+.gri-status {
+  font-size: 0.62rem;
+  flex-shrink: 0;
+  font-family: 'Courier New', monospace;
+}
+.status-gri-resolved               { color: #5a9a50; }
+.status-gri-resolved_with_difficulty { color: #5a90c8; }
+.status-gri-reviewed               { color: #5a9a50; font-weight: bold; }
+.status-gri-ambiguous              { color: #c8a05a; }
+.status-gri-unmatched              { color: #c05050; }

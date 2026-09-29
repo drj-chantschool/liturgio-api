@@ -15,8 +15,17 @@ chant adaptations in the `liturgio` MySQL database (`local_chants`,
     translation source, and exactness flag
   - `GET /api/translation_sources` — active translation source codes
   - `GET /api/stats` — counts by status/part
-  - serves the frontend from `static/` at `/`
-- `static/` — frontend (`index.html`, `app.js`, `style.css`)
+  - **Source review** (`/sources` page):
+    - `GET /api/lit_part_sources` — list source texts (filters: `book`,
+      `status`, `service_part`, `epoch_slug`, `provenanced`, `q`)
+    - `GET /api/lit_part_sources/{text_id}` — one source
+    - `PATCH /api/lit_part_sources/{text_id}` — partial update / approve
+      (status vocab `draft`/`reviewed`/`published`)
+    - `GET /api/books/{book}/{pdf_page_num}/image` — page image (PNG);
+      `bbox` coords are in this image's pixel space (dpi=200)
+  - serves the frontend from `static/` at `/` and `/sources`
+- `static/` — frontend (`index.html`/`app.js` chant editor;
+  `sources.html`/`sources.js` source review; shared `style.css`)
 
 ## Install
 

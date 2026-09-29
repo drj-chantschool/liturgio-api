@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — GR Index Review</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/gr-index.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — GR Index Review</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index" class="active">GR Index</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day">Day View</a>
+    </nav>
+    <div id="gri-stats-badge"></div>
+  </header>
+
+  <div id="main">
+    <!-- ── Left sidebar ── -->
+    <aside id="sidebar">
+      <div id="filter-area">
+        <div class="filter-group">
+          <label class="filter-label">Status</label>
+          <div class="chips" id="status-chips">
+            <button class="chip active" data-status="">All</button>
+            <button class="chip" data-status="resolved">Resolved</button>
+            <button class="chip" data-status="resolved_with_difficulty">Difficult</button>
+            <button class="chip" data-status="ambiguous">Ambiguous</button>
+            <button class="chip" data-status="unmatched">Unmatched</button>
+            <button class="chip" data-status="reviewed">Reviewed</button>
+            <button class="chip" data-status="(none)">None</button>
+          </div>
+        </div>
+      </div>
+      <div id="gri-search-area">
+        <input type="search" id="gri-search" placeholder="Search incipit…" autocomplete="off">
+      </div>
+      <div id="gri-list-count"></div>
+      <ul id="gri-list"></ul>
+    </aside>
+
+    <!-- ── Right panel ── -->
+    <main id="gri-panel">
+      <div id="gri-empty-state">
+        <p>Select an entry from the list to review it</p>
+      </div>
+
+      <div id="gri-editor" hidden>
+
+        <!-- Header -->
+        <div id="gri-header">
+          <div id="gri-title"></div>
+          <div id="gri-meta"></div>
+        </div>
+
+        <!-- Two page images -->
+        <div id="gri-images-row">
+          <div class="gri-img-box">
+            <div class="pane-label" id="gri-img-label-a">Page</div>
+            <div class="gri-img-wrap">
+              <img id="gri-page-img-a" alt="GR page">
+            </div>
+          </div>
+          <div class="gri-img-box">
+            <div class="pane-label" id="gri-img-label-b">Next page</div>
+            <div class="gri-img-wrap">
+              <img id="gri-page-img-b" alt="GR next page">
+            </div>
+          </div>
+        </div>
+
+        <!-- Assignment display -->
+        <div id="gri-assignment-area">
+          <div class="pane-label">Current assignment</div>
+          <div id="gri-assignment-none" class="gri-assign-none">No assignment</div>
+          <div id="gri-assignment-display" hidden>
+            <div id="gri-assign-meta"></div>
+            <div id="gri-assign-engraving"></div>
+          </div>
+        </div>
+
+        <!-- Action bar -->
+        <div id="gri-actions">
+          <button id="gri-btn-browse" class="btn-secondary">Browse gregobase…</button>
+          <button id="gri-btn-new" class="btn-secondary">New chant…</button>
+          <button id="gri-btn-reviewed" class="btn-primary" id="gri-btn-reviewed">Mark reviewed</button>
+          <button id="gri-btn-clear" class="btn-delete" hidden>Clear assignment</button>
+          <span id="gri-msg"></span>
+        </div>
+
+        <!-- Browse panel -->
+        <div id="gri-browse-panel" hidden>
+          <div class="pane-label" id="gri-browse-panel-label">Browse chant groups</div>
+          <div id="gri-browse-controls">
+            <label>Part
+              <select id="gri-browse-part"></select>
+            </label>
+            <label>Letter
+              <select id="gri-browse-letter"></select>
+            </label>
+            <span id="gri-browse-msg"></span>
+            <button id="gri-browse-close-btn" class="btn-secondary btn-sm" style="margin-left:auto">Close</button>
+          </div>
+          <div id="gri-browse-body">
+            <ul id="gri-browse-list"></ul>
+            <div id="gri-browse-detail">
+              <div id="gri-browse-detail-meta"></div>
+              <div id="gri-browse-detail-engrav"></div>
+              <div id="gri-browse-detail-actions" hidden>
+                <button id="gri-browse-assign-btn" class="btn-primary btn-sm">Assign this</button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <!-- New chant panel -->
+        <div id="gri-new-panel" hidden>
+          <div class="pane-label">Paste new chant GABC</div>
+          <div id="gri-new-form">
+            <div class="gri-new-row">
+              <label>Incipit
+                <input type="text" id="gri-new-incipit" placeholder="Latin incipit…">
+              </label>
+              <label>Mode
+                <input type="text" id="gri-new-mode" placeholder="e.g. 1" style="width:4rem">
+              </label>
+              <label>Version
+                <input type="text" id="gri-new-version" value="latin" style="width:6rem">
+              </label>
+              <label>Chant group name
+                <input type="text" id="gri-new-name" placeholder="(uses incipit if blank)" style="width:14rem">
+              </label>
+            </div>
+            <div class="pane-label" style="margin-top:0.5rem">GABC</div>
+            <textarea id="gri-new-gabc" spellcheck="false" rows="8" placeholder="Paste GABC here…"></textarea>
+            <div id="gri-new-preview"></div>
+            <div class="gri-new-row gri-new-actions">
+              <button id="gri-new-preview-btn" class="btn-secondary btn-sm">Preview</button>
+              <button id="gri-new-save-btn" class="btn-primary">Save &amp; assign</button>
+              <button id="gri-new-close-btn" class="btn-secondary btn-sm">Cancel</button>
+              <span id="gri-new-msg"></span>
+            </div>
+          </div>
+        </div>
+
+      </div><!-- /gri-editor -->
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/gr-index.js"></script>
+</body>
+</html>

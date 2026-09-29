@@ -1,0 +1,55 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Dashboard</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/dashboard.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Dashboard</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/dashboard" class="active">Dashboard</a>
+      <a href="/day">Day View</a>
+    </nav>
+    <div id="dash-badge"></div>
+  </header>
+
+  <div id="dash-main">
+    <div id="dash-controls">
+      <label class="filter-label">Scope</label>
+      <div class="chips" id="scope-chips">
+        <!-- populated by JS -->
+      </div>
+    </div>
+
+    <div id="dash-body">
+      <div id="dash-loading">Loading…</div>
+      <div id="dash-error" hidden></div>
+
+      <section id="dash-section-sources" hidden>
+        <h2>Book parsing progress</h2>
+        <div id="dash-sources-cards"></div>
+      </section>
+
+      <section id="dash-section-chants" hidden>
+        <h2>Chants set</h2>
+        <div class="dash-card" id="dash-chants-card">
+          <div class="dash-card-parts" id="dash-chants-parts"></div>
+        </div>
+      </section>
+    </div>
+  </div>
+</div>
+
+<script src="/static/dashboard.js"></script>
+</body>
+</html>
