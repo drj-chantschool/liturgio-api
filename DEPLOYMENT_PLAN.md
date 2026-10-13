@@ -1,7 +1,9 @@
 # Hosting & Deployment Plan
 
-**Done (2026-10-12):** `liturgio-api` runs on DO App Platform from the `prod`
-branch against a read-only copy of `liturgio` in DO Managed MySQL. Page images
+**Done (2026-10-12):** `liturgio-api` is live at
+<https://liturgio-app-ychrf.ondigitalocean.app>, deployed from the `prod`
+branch on DO App Platform. All endpoints were smoke-tested. It reads from a
+read-only copy of `liturgio` in DO Managed MySQL. Page images
 are served from Spaces, the DB firewall is scoped to the app plus the admin IP,
 and DO's daily backups are confirmed running. Details are in the 2026-10-12
 entry of `../maintenance.md`.
@@ -10,7 +12,7 @@ entry of `../maintenance.md`.
 
 | Piece | Where |
 |---|---|
-| App | App Platform `liturgio-app` (`016ee61d-…`), deploys on push to `prod` |
+| App | App Platform `liturgio-app` (`016ee61d-…`), deploys on push to `prod`; `gabc-tools` is pinned by commit in `requirements.txt`, so bump the pin when the library changes |
 | DB | Managed MySQL 8.4 `db-mysql-nyc3-73323`, schema `liturgio`; app connects as `liturgio_ro` |
 | Images | Spaces `liturgio-images` (sfo3), key `books/<book>/<printed_page_num>.png`; app holds a **read-only** key (`liturgio-api-ro`) |
 | Secrets | App env vars `LITURGIO_DB_PASSWORD` and `LITURGIO_SPACES_SECRET` are type `SECRET`; local copies are in the keyring (`liturgio-mysql-do`, `liturgio-images`, `liturgio-images-ro`) |
@@ -35,9 +37,6 @@ non-GET request returns 403.
 
 ## Todos
 
-- [ ] **Smoke-test the live app URL** once the first deployment finishes.
-      Run the same endpoint sweep that already passed against DO from a
-      local instance in prod mode.
 - [ ] **Decide on App Platform sizing.** The spec runs 2 × `apps-s-1vcpu-1gb`
       (~$24/mo); the original budget assumed one $5 Basic instance.
 - [ ] **Script the refresh above** (`scripts/sync_to_do.py`) so it isn't a
