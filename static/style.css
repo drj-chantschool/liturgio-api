@@ -1523,3 +1523,16 @@ select:focus { border-color: var(--accent-lt); }
   transition: all 0.12s;
 }
 .btn-related-style:hover { background: #7a6a9a; color: #fff; }
+
+/* tex_verses: text verses typeset below the score (as on GregoBase) */
+.tex-verses {
+  margin: 0.75rem 1rem 0.5rem;
+  font-family: 'Libertinus Serif', Georgia, 'Times New Roman', serif;
+  font-size: 0.95rem;
+  line-height: 1.45;
+}
+.tex-verses .tv-red   { color: #b3261e; }
+.tex-verses .tv-gap   { display: block; height: 0.6em; }
+.tex-verses .tv-table { border-collapse: collapse; }
+.tex-verses .tv-table td { padding: 0 1.5em 0 0; vertical-align: top; }
+.tex-verses .tv-gaprow td { height: 0.6em; }

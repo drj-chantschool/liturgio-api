@@ -3,13 +3,9 @@
 // ── State ────────────────────────────────────────────────────────────────────
 const state = {
   entries: [],        // full list from API
-  selected: null,     // GrIndexEntry (list fields only)
-  detail: null,       // GrIndexEntry (with gabc_body)
-  filters: { status: '', q: '' },
-  browse: {
-    groups: [],       // GrIndexBrowseGroup[]
-    selected: null,   // currently highlighted group in browse panel
-  },
+  selected: null,     // ChantIndexEntry (list fields only)
+  detail: null,       // ChantIndexEntry (with chant_gabc_body)
+  filters: { book: '', status: '', q: '' },
 };
 
 // section_type → gregobase office-part code
@@ -22,6 +18,7 @@ const SECTION_TO_PART = {
 const $ = id => document.getElementById(id);
 
 // DOM refs
+const bookSelect      = $('gri-book');
 const statusChips     = $('status-chips');
 const griSearch       = $('gri-search');
 const griList         = $('gri-list');
@@ -44,27 +41,6 @@ const griBtnBrowse    = $('gri-btn-browse');
 const griBtnNew       = $('gri-btn-new');
 const griBtnReviewed  = $('gri-btn-reviewed');
 const griBtnClear     = $('gri-btn-clear');
-const browsePanel         = $('gri-browse-panel');
-const browsePart          = $('gri-browse-part');
-const browseLetter        = $('gri-browse-letter');
-const browseCloseBtn      = $('gri-browse-close-btn');
-const browseMsg           = $('gri-browse-msg');
-const browseList          = $('gri-browse-list');
-const browseDetailMeta    = $('gri-browse-detail-meta');
-const browseDetailEngrav  = $('gri-browse-detail-engrav');
-const browseDetailActions = $('gri-browse-detail-actions');
-const browseAssignBtn     = $('gri-browse-assign-btn');
-const newPanel        = $('gri-new-panel');
-const newIncipit      = $('gri-new-incipit');
-const newMode         = $('gri-new-mode');
-const newVersion      = $('gri-new-version');
-const newName         = $('gri-new-name');
-const newGabc         = $('gri-new-gabc');
-const newPreviewDiv   = $('gri-new-preview');
-const newPreviewBtn   = $('gri-new-preview-btn');
-const newSaveBtn      = $('gri-new-save-btn');
-const newCloseBtn     = $('gri-new-close-btn');
-const newMsg          = $('gri-new-msg');
 
 // ── API helpers ───────────────────────────────────────────────────────────────
 async function api(path, opts) {
@@ -80,10 +56,11 @@ async function api(path, opts) {
 // ── List ──────────────────────────────────────────────────────────────────────
 async function loadList() {
   const p = new URLSearchParams();
+  if (state.filters.book)   p.set('book', state.filters.book);
   if (state.filters.status) p.set('match_status', state.filters.status);
   if (state.filters.q)      p.set('q', state.filters.q);
   try {
-    state.entries = await api('/api/gr_index_entries?' + p.toString());
+    state.entries = await api('/api/chant_indices?' + p.toString());
   } catch (e) {
     griList.innerHTML = `<li class="src-error">Error: ${escapeHtml(e.message)}</li>`;
     return;
@@ -149,10 +126,10 @@ async function selectEntry(rowId) {
   editor.hidden = false;
   griMsg.textContent = '';
 
-  griTitle.textContent = `#${e.row_id} · ${e.section_type || '?'} · mode ${e.mode ?? '—'} · p.${e.page ?? '—'}`;
+  griTitle.textContent = `${e.book} #${e.id} · ${e.section_type || '?'} · mode ${e.mode ?? '—'} · p.${e.page ?? '—'}`;
   griMeta.textContent = `match_status: ${e.match_status || '(none)'}`;
 
-  loadImages(e.page);
+  loadImages(e.book, e.page);
 
   // Load detail (with gabc_body)
   griAssignNone.hidden = false;
@@ -161,26 +138,29 @@ async function selectEntry(rowId) {
   griBtnClear.hidden = true;
 
   try {
-    state.detail = await api(`/api/gr_index_entries/${rowId}`);
+    state.detail = await api(`/api/chant_indices/${rowId}`);
     renderAssignment(state.detail);
   } catch (err) {
     griAssignMeta.textContent = 'Error loading detail: ' + err.message;
   }
-
-  // Pre-fill browse dropdowns from entry
-  browsePart.value = SECTION_TO_PART[e.section_type] || 'in';
-  const firstLetter = (e.incipit || '').trim()[0]?.toUpperCase() || 'A';
-  browseLetter.value = firstLetter || 'A';
 }
 
-function loadImages(page) {
+function loadImages(book, page) {
   if (page != null) {
-    griImgLabelA.textContent = `GR p.${page}`;
-    griImgA.src = `/api/books/GRADUALE/${page}/image`;
+    const b = encodeURIComponent(book);
+    griImgLabelA.textContent = `${book} p.${page}`;
+    griImgA.src = `/api/books/${b}/${encodeURIComponent(page)}/image`;
     griImgA.style.display = '';
-    griImgLabelB.textContent = `GR p.${page + 1}`;
-    griImgB.src = `/api/books/GRADUALE/${page + 1}/image`;
-    griImgB.style.display = '';
+    // page is a printed label (VARCHAR); only numeric pages have an obvious next page
+    if (/^\d+$/.test(page)) {
+      const next = Number(page) + 1;
+      griImgLabelB.textContent = `${book} p.${next}`;
+      griImgB.src = `/api/books/${b}/${next}/image`;
+      griImgB.style.display = '';
+    } else {
+      griImgLabelB.textContent = '';
+      griImgB.style.display = 'none';
+    }
   } else {
     griImgA.style.display = 'none';
     griImgB.style.display = 'none';
@@ -190,10 +170,7 @@ function loadImages(page) {
 }
 
 function renderAssignment(detail) {
-  const hasGb = detail.gregobase_id != null;
-  const hasLc = detail.local_chant_id != null;
-
-  if (!hasGb && !hasLc) {
+  if (!detail.chant_uuid) {
     griAssignNone.hidden = false;
     griAssignDisp.hidden = true;
     griBtnClear.hidden = true;
@@ -204,53 +181,17 @@ function renderAssignment(detail) {
   griAssignDisp.hidden = false;
   griBtnClear.hidden = false;
 
-  if (hasGb) {
-    griAssignMeta.textContent =
-      `gregobase:${detail.gregobase_id}` +
-      (detail.gb_incipit ? ` — ${detail.gb_incipit}` : '');
-    renderGabc(detail.gb_gabc_body, griAssignEngrav);
-  } else {
-    griAssignMeta.textContent =
-      `local:${detail.local_chant_id}` +
-      (detail.lc_incipit ? ` — ${detail.lc_incipit}` : '');
-    renderGabc(detail.lc_gabc_body, griAssignEngrav);
-  }
-}
-
-// ── GABC rendering ────────────────────────────────────────────────────────────
-function renderGabc(gabcBody, container) {
-  if (typeof exsurge === 'undefined') {
-    container.innerHTML = '<em class="render-note">exsurge not loaded</em>';
-    return;
-  }
-  if (!gabcBody) {
-    container.innerHTML = '<em class="render-note">No GABC</em>';
-    return;
-  }
-  container.innerHTML = '<em class="render-note">Rendering…</em>';
-  requestAnimationFrame(() => {
-    const w = Math.max((container.clientWidth || 700) - 32, 300);
-    try {
-      const ctxt = new exsurge.ChantContext();
-      const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, gabcBody);
-      const score = new exsurge.ChantScore(ctxt, mappings, true);
-      score.performLayout(ctxt);
-      score.layoutChantLines(ctxt, w, () => {
-        try {
-          container.innerHTML = score.createSvg(ctxt);
-        } catch (err) {
-          container.innerHTML = `<em class="render-note">Render error: ${escapeHtml(err.message)}</em>`;
-        }
-      });
-    } catch (err) {
-      container.innerHTML = `<em class="render-note">Render error: ${escapeHtml(err.message)}</em>`;
-    }
-  });
+  griAssignMeta.textContent =
+    detail.chant_uuid +
+    (detail.chant_incipit ? ` — ${detail.chant_incipit}` : '') +
+    (detail.chant_mode    ? ` · mode ${detail.chant_mode}` : '') +
+    (detail.chant_version ? ` · ${detail.chant_version}` : '');
+  renderGabc(detail.chant_gabc_body, griAssignEngrav, detail.chant_verses_html);
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
 async function patchEntry(rowId, fields) {
-  return api(`/api/gr_index_entries/${rowId}`, {
+  return api(`/api/chant_indices/${rowId}`, {
     method: 'PATCH',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(fields),
@@ -274,8 +215,7 @@ griBtnClear.addEventListener('click', async () => {
   griMsg.textContent = 'Clearing…';
   try {
     const updated = await patchEntry(state.selected.row_id, {
-      gregobase_id: null,
-      local_chant_id: null,
+      chant_uuid: null,
       match_status: 'unmatched',
     });
     applyUpdate(updated);
@@ -299,158 +239,56 @@ function applyUpdate(detail) {
 }
 
 // ── Browse panel ──────────────────────────────────────────────────────────────
-griBtnBrowse.addEventListener('click', () => {
-  hidePanels();
-  browsePanel.hidden = false;
-  runBrowseLoad();
-});
-
-browseCloseBtn.addEventListener('click', () => { browsePanel.hidden = true; });
-
-browseLetter.addEventListener('change', runBrowseLoad);
-
-async function runBrowseLoad() {
-  const part = browsePart.value;
-  const letter = browseLetter.value;
-  if (!part || !letter) return;
-  browseMsg.textContent = 'Loading…';
-  browseList.innerHTML = '';
-  clearBrowseDetail();
-  state.browse.groups = [];
-  state.browse.selected = null;
-  try {
-    const p = new URLSearchParams({ part, letter, limit: '300' });
-    state.browse.groups = await api('/api/gr_index_browse?' + p.toString());
-    browseMsg.textContent = `${state.browse.groups.length} group(s)`;
-    renderBrowseList();
-  } catch (e) {
-    browseMsg.textContent = 'Error: ' + e.message;
-  }
-}
-
-function renderBrowseList() {
-  browseList.innerHTML = '';
-  if (!state.browse.groups.length) {
-    const li = document.createElement('li');
-    li.className = 'gri-browse-empty';
-    li.textContent = 'No groups found.';
-    browseList.appendChild(li);
-    return;
-  }
-  for (const g of state.browse.groups) {
-    const li = document.createElement('li');
-    li.className = 'gri-browse-list-item';
-    li.dataset.gid = g.chant_group_id;
-    li.textContent = g.incipit || g.canonical_name || `group ${g.chant_group_id}`;
-    li.addEventListener('click', () => selectBrowseGroup(g));
-    browseList.appendChild(li);
-  }
-}
-
-function selectBrowseGroup(g) {
-  state.browse.selected = g;
-  // Highlight
-  browseList.querySelectorAll('.gri-browse-list-item').forEach(li => {
-    li.classList.toggle('active', li.dataset.gid == g.chant_group_id);
-  });
-  // Show detail
-  browseDetailMeta.innerHTML =
-    `<strong>${escapeHtml(g.incipit || g.canonical_name || '')}</strong>` +
-    (g.best_mode    ? ` <span class="mgp-badge">mode ${escapeHtml(g.best_mode)}</span>` : '') +
-    (g.best_version ? ` <span class="mgp-badge">${escapeHtml(g.best_version)}</span>` : '') +
-    ` <span class="mgp-badge gri-gb-id">#${g.best_gregobase_id}</span>`;
-  browseDetailEngrav.innerHTML = '';
-  if (g.best_gabc_body) renderGabc(g.best_gabc_body, browseDetailEngrav);
-  else browseDetailEngrav.innerHTML = '<em class="render-note">No GABC</em>';
-  browseDetailActions.hidden = false;
-}
-
-function clearBrowseDetail() {
-  browseDetailMeta.innerHTML = '';
-  browseDetailEngrav.innerHTML = '';
-  browseDetailActions.hidden = true;
-}
-
-browseAssignBtn.addEventListener('click', async () => {
-  if (!state.selected || !state.browse.selected) return;
-  browseMsg.textContent = 'Assigning…';
-  const gregobaseId = state.browse.selected.best_gregobase_id;
-  try {
+const browser = createGregobaseBrowser({
+  panel: $('gri-browse-panel'),
+  api,
+  onAssign: async gregobaseId => {
+    if (!state.selected) throw new Error('No entry selected');
     const updated = await patchEntry(state.selected.row_id, {
-      gregobase_id: gregobaseId,
-      local_chant_id: null,
+      chant_uuid: `gregobase:${gregobaseId}`,
       match_status: 'reviewed',
     });
     applyUpdate(updated);
-    browsePanel.hidden = true;
     griMsg.textContent = `✓ Assigned gregobase:${gregobaseId}`;
-  } catch (e) {
-    browseMsg.textContent = 'Error: ' + e.message;
-  }
+  },
+});
+
+// Pre-select part and first letter from the selected index entry
+griBtnBrowse.addEventListener('click', () => {
+  hidePanels();
+  const e = state.selected;
+  browser.open({
+    part: SECTION_TO_PART[e?.section_type] || 'in',
+    letter: (e?.incipit || '').trim()[0]?.toUpperCase(),
+  });
 });
 
 // ── New chant panel ───────────────────────────────────────────────────────────
-griBtnNew.addEventListener('click', () => {
-  hidePanels();
-  // Pre-fill from selected entry
-  if (state.selected) {
-    newIncipit.value = state.selected.incipit || '';
-    newMode.value = state.selected.mode != null ? String(state.selected.mode) : '';
-    newName.value = state.selected.incipit || '';
-  }
-  newGabc.value = '';
-  newPreviewDiv.innerHTML = '';
-  newMsg.textContent = '';
-  newPanel.hidden = false;
-  newGabc.focus();
-});
-
-newCloseBtn.addEventListener('click', () => { newPanel.hidden = true; });
-
-newPreviewBtn.addEventListener('click', () => {
-  const body = extractGabcBody(newGabc.value.trim());
-  if (body) renderGabc(body, newPreviewDiv);
-  else newPreviewDiv.innerHTML = '<em class="render-note">No GABC to preview</em>';
-});
-
-newSaveBtn.addEventListener('click', async () => {
-  if (!state.selected) return;
-  const gabc = newGabc.value.trim();
-  if (!gabc) { newMsg.textContent = 'GABC cannot be empty.'; return; }
-  newMsg.textContent = 'Saving…';
-  newSaveBtn.disabled = true;
-  try {
-    const updated = await api(`/api/gr_index_entries/${state.selected.row_id}/local_chant`, {
+const newChant = createNewChantPanel({
+  panel: $('gri-new-panel'),
+  onSave: async payload => {
+    if (!state.selected) throw new Error('No entry selected');
+    const updated = await api(`/api/chant_indices/${state.selected.row_id}/local_chant`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        gabc,
-        incipit: newIncipit.value.trim() || null,
-        mode: newMode.value.trim() || null,
-        version: newVersion.value.trim() || 'latin',
-        canonical_name: newName.value.trim() || null,
-      }),
+      body: JSON.stringify(payload),
     });
     applyUpdate(updated);
-    newPanel.hidden = true;
     griMsg.textContent = `✓ New local chant created and assigned`;
-  } catch (e) {
-    newMsg.textContent = 'Error: ' + e.message;
-  } finally {
-    newSaveBtn.disabled = false;
-  }
+  },
+});
+
+// Pre-fill from selected entry
+griBtnNew.addEventListener('click', () => {
+  hidePanels();
+  const e = state.selected;
+  newChant.open({ incipit: e?.incipit, mode: e?.mode, name: e?.incipit });
 });
 
 // ── Utilities ─────────────────────────────────────────────────────────────────
 function hidePanels() {
-  browsePanel.hidden = true;
-  newPanel.hidden = true;
-}
-
-function extractGabcBody(gabc) {
-  if (!gabc) return '';
-  const parts = gabc.split('%%');
-  return parts.length > 1 ? parts[parts.length - 1].trim() : gabc.trim();
+  browser.hide();
+  newChant.hide();
 }
 
 function escapeHtml(s) {
@@ -460,6 +298,11 @@ function escapeHtml(s) {
 }
 
 // ── Filters ───────────────────────────────────────────────────────────────────
+bookSelect.addEventListener('change', () => {
+  state.filters.book = bookSelect.value;
+  loadList();
+});
+
 statusChips.addEventListener('click', e => {
   const btn = e.target.closest('.chip');
   if (!btn) return;
@@ -479,40 +322,21 @@ griSearch.addEventListener('input', () => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-async function loadBrowseParts() {
-  const parts = await api('/api/gregobase_parts');
-  browsePart.innerHTML = '';
-  for (const p of parts) {
+async function loadBooks() {
+  const books = await api('/api/chant_indices/books');
+  bookSelect.innerHTML = '<option value="">All books</option>';
+  for (const b of books) {
     const opt = document.createElement('option');
-    opt.value = p;
-    opt.textContent = p;
-    browsePart.appendChild(opt);
+    opt.value = b;
+    opt.textContent = b;
+    bookSelect.appendChild(opt);
   }
-  await loadBrowseLetters();
+  if (books.includes('GRADUALE')) bookSelect.value = 'GRADUALE';
+  state.filters.book = bookSelect.value;
 }
-
-async function loadBrowseLetters() {
-  const part = browsePart.value;
-  if (!part) return;
-  const letters = await api('/api/gregobase_letters?part=' + encodeURIComponent(part));
-  const prev = browseLetter.value;
-  browseLetter.innerHTML = '';
-  for (const l of letters) {
-    const opt = document.createElement('option');
-    opt.value = l;
-    opt.textContent = l;
-    browseLetter.appendChild(opt);
-  }
-  // Restore previous selection if still present, else default to first
-  if (letters.includes(prev)) browseLetter.value = prev;
-}
-
-browsePart.addEventListener('change', async () => {
-  await loadBrowseLetters();
-  runBrowseLoad();
-});
 
 (async function init() {
-  await loadBrowseParts();
+  await loadBooks();
+  await browser.init();
   await loadList();
 })();

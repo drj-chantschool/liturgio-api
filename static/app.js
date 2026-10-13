@@ -1,24 +1,5 @@
 'use strict';
 
-// ── exsurge workarounds (frmatthew/exsurge 0.0.0 only — commented out for bbloomf 1.24.2) ──
-//
-// // 1. getSubStringLength crash on empty SVG text elements
-// try {
-//   const _origGSL = SVGTextContentElement.prototype.getSubStringLength;
-//   SVGTextContentElement.prototype.getSubStringLength = function (charnum, nchars) {
-//     try { return _origGSL.call(this, charnum, nchars); } catch (_) { return 0; }
-//   };
-// } catch (_) {}
-//
-// // 2. Garbled layout from ~ and <i>/<b> tags
-// function preprocessGabcForPreview(body) {
-//   return body
-//     .replace(/\(([^)]*)\)/g, (_, n) => '(' + n.replace(/~/g, '') + ')')
-//     .replace(/<\/?(i|b)>/gi, '');
-// }
-
-function preprocessGabcForPreview(body) { return body; }
-
 // ── State ─────────────────────────────────────────────────────────────────────
 const state = {
   chants: [],        // list results
@@ -77,50 +58,7 @@ const PART_NAMES = {
   in: 'Introit', gr: 'Gradual', al: 'Alleluia', of: 'Offertory', co: 'Communion',
 };
 
-// ── GABC / exsurge ────────────────────────────────────────────────────────────
-function extractGabcBody(gabc) {
-  if (!gabc) return '';
-  const parts = gabc.split('%%');
-  return parts.length > 1 ? parts[parts.length - 1].trim() : gabc.trim();
-}
-
-function renderGabc(gabcText, container, isBody = false) {
-  if (typeof exsurge === 'undefined') {
-    container.innerHTML = '<em class="render-note">exsurge not loaded — check network</em>';
-    return;
-  }
-  const body = (isBody ? gabcText : extractGabcBody(gabcText)).trim();
-  if (!body) {
-    container.innerHTML = '<em class="render-note">No content</em>';
-    return;
-  }
-  container.innerHTML = '<em class="render-note">Rendering…</em>';
-
-  // rAF ensures the container is laid out and getBoundingClientRect() is valid
-  requestAnimationFrame(() => _doRender(body, container));
-}
-
-function _doRender(body, container) {
-  const rect = container.getBoundingClientRect();
-  const w = Math.max((rect.width || container.clientWidth) - 32, 300);
-  const safeBody = preprocessGabcForPreview(body);
-  try {
-    const ctxt = new exsurge.ChantContext();
-    const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, safeBody);
-    const score = new exsurge.ChantScore(ctxt, mappings, true);
-    score.performLayout(ctxt);
-    score.layoutChantLines(ctxt, w, () => {
-      try {
-        container.innerHTML = score.createSvg(ctxt);
-      } catch (err) {
-        container.innerHTML = `<em class="render-note error">Draw error: ${escHtml(err.message)}</em>`;
-      }
-    });
-  } catch (err) {
-    container.innerHTML = `<em class="render-note error">Render error: ${escHtml(err.message)}</em>`;
-  }
-}
-
+// ── Editor preview (renderer: chant-render.js) ───────────────────────────────
 let previewTimer = null;
 function schedulePreview() {
   clearTimeout(previewTimer);
@@ -348,7 +286,7 @@ function renderLatinRefs(refs) {
 
     const previewEl = div.querySelector('.latin-ref-preview');
     if (ref.gabc_body) {
-      renderGabc(ref.gabc_body, previewEl, true);
+      renderGabc(ref.gabc_body, previewEl, ref.verses_html);
     } else {
       previewEl.innerHTML = '<em class="render-note">No GABC available</em>';
     }
@@ -365,7 +303,7 @@ latinSection.addEventListener('toggle', () => {
   const previews = latinRefs.querySelectorAll('.latin-ref-preview');
   state.selected.latin_refs.forEach((ref, i) => {
     if (previews[i] && ref.gabc_body) {
-      renderGabc(ref.gabc_body, previews[i], true);
+      renderGabc(ref.gabc_body, previews[i], ref.verses_html);
     }
   });
 });

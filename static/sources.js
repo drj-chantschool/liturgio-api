@@ -8,12 +8,6 @@ const state = {
   parts: [],            // service_part reference
   filters: { book: '', status: 'draft', q: '' },
   bboxFilter: null,     // Set of text_ids when filtering by shared bbox; null = off
-  browse: {
-    groups: [],
-    selected: null,
-    chants: [],
-    selectedChant: null,
-  },
 };
 
 const $ = id => document.getElementById(id);
@@ -51,33 +45,6 @@ const seMsg       = $('se-status-msg');
 const seCycle     = $('se-cycle');
 const seBrowseBtn = $('se-browse-btn');
 const seNewBtn    = $('se-new-btn');
-
-// Browse / new-chant panel refs
-const browsePanelEl         = $('gri-browse-panel');
-const browsePartSel         = $('gri-browse-part');
-const browseLetterSel       = $('gri-browse-letter');
-const browseLetterSel2Wrap  = $('gri-browse-letter2-wrap');
-const browseLetterSel2      = $('gri-browse-letter2');
-const browseCloseBtnEl      = $('gri-browse-close-btn');
-const browseMsgEl           = $('gri-browse-msg');
-const browseListEl          = $('gri-browse-list');
-const browseDetailMetaEl    = $('gri-browse-detail-meta');
-const browseChantListEl     = $('gri-browse-chant-list');
-const browseChantUl         = $('gri-browse-chant-ul');
-const browseDetailEngravEl  = $('gri-browse-detail-engrav');
-const browseDetailActionsEl = $('gri-browse-detail-actions');
-const browseAssignBtnEl     = $('gri-browse-assign-btn');
-const newPanelEl            = $('gri-new-panel');
-const newIncipitEl          = $('gri-new-incipit');
-const newModeEl             = $('gri-new-mode');
-const newVersionEl          = $('gri-new-version');
-const newNameEl             = $('gri-new-name');
-const newGabcEl             = $('gri-new-gabc');
-const newPreviewDivEl       = $('gri-new-preview');
-const newPreviewBtnEl       = $('gri-new-preview-btn');
-const newSaveBtnEl          = $('gri-new-save-btn');
-const newCloseBtnEl         = $('gri-new-close-btn');
-const newMsgEl              = $('gri-new-msg');
 
 const imgLabel    = $('src-image-label');
 const pageImg     = $('src-page-img');
@@ -168,37 +135,6 @@ function renderStats() {
 }
 
 // ── Chant engraving rendering ────────────────────────────────────────────────
-function renderGabc(gabcBody, container) {
-  if (typeof exsurge === 'undefined') {
-    container.innerHTML = '<em class="render-note">exsurge not loaded</em>';
-    return;
-  }
-  if (!gabcBody) {
-    container.innerHTML = '<em class="render-note">No GABC</em>';
-    return;
-  }
-  container.innerHTML = '<em class="render-note">Rendering…</em>';
-  requestAnimationFrame(() => {
-    const rect = container.getBoundingClientRect();
-    const w = Math.max((rect.width || container.clientWidth) - 32, 300);
-    try {
-      const ctxt = new exsurge.ChantContext();
-      const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, gabcBody);
-      const score = new exsurge.ChantScore(ctxt, mappings, true);
-      score.performLayout(ctxt);
-      score.layoutChantLines(ctxt, w, () => {
-        try {
-          container.innerHTML = score.createSvg(ctxt);
-        } catch (err) {
-          container.innerHTML = `<em class="render-note">Render error: ${escapeHtml(err.message)}</em>`;
-        }
-      });
-    } catch (err) {
-      container.innerHTML = `<em class="render-note">Render error: ${escapeHtml(err.message)}</em>`;
-    }
-  });
-}
-
 async function loadChantEngraving(s) {
   if (!s.chant_uuid) {
     seChantSection.hidden = true;
@@ -212,7 +148,7 @@ async function loadChantEngraving(s) {
     const parts = [chant.incipit, chant.mode ? `mode ${chant.mode}` : null, chant.version]
       .filter(Boolean).join(' · ');
     seChantMeta.textContent = parts || s.chant_uuid;
-    renderGabc(chant.gabc_body, seChantPreview);
+    renderGabc(chant.gabc_body, seChantPreview, chant.verses_html);
   } catch (e) {
     seChantPreview.innerHTML = `<em class="render-note">Error: ${escapeHtml(e.message)}</em>`;
   }
@@ -572,190 +508,16 @@ async function loadParts() {
 }
 
 // ── Browse / new-chant panels ─────────────────────────────────────────────────
-function extractGabcBody(gabc) {
-  if (!gabc) return '';
-  const parts = gabc.split('%%');
-  return parts.length > 1 ? parts[parts.length - 1].trim() : gabc.trim();
-}
-
 function hidePanels() {
-  browsePanelEl.hidden = true;
-  newPanelEl.hidden = true;
+  browser.hide();
+  newChant.hide();
 }
 
-async function loadBrowseParts() {
-  try {
-    const parts = await api('/api/gregobase_parts');
-    browsePartSel.innerHTML = '';
-    for (const p of parts) {
-      const opt = document.createElement('option');
-      opt.value = p;
-      opt.textContent = p;
-      browsePartSel.appendChild(opt);
-    }
-    await loadBrowseLetters();
-  } catch (_) {}
-}
-
-async function loadBrowseLetters() {
-  const part = browsePartSel.value;
-  if (!part) return;
-  try {
-    const letters = await api('/api/gregobase_letters?part=' + encodeURIComponent(part));
-    const prev = browseLetterSel.value;
-    browseLetterSel.innerHTML = '';
-    for (const l of letters) {
-      const opt = document.createElement('option');
-      opt.value = l;
-      opt.textContent = l;
-      browseLetterSel.appendChild(opt);
-    }
-    if (letters.includes(prev)) browseLetterSel.value = prev;
-  } catch (_) {}
-  await loadBrowseLetter2();
-}
-
-async function loadBrowseLetter2() {
-  const part = browsePartSel.value;
-  const letter = browseLetterSel.value;
-  if (!part || !letter) { browseLetterSel2Wrap.hidden = true; return; }
-  try {
-    const sub = await api('/api/gregobase_letters?part=' + encodeURIComponent(part) + '&prefix=' + encodeURIComponent(letter));
-    if (sub.length > 1) {
-      const prev = browseLetterSel2.value;
-      browseLetterSel2.innerHTML = '';
-      for (const l of sub) {
-        const opt = document.createElement('option');
-        opt.value = l;
-        opt.textContent = l;
-        browseLetterSel2.appendChild(opt);
-      }
-      if (sub.includes(prev)) browseLetterSel2.value = prev;
-      browseLetterSel2Wrap.hidden = false;
-    } else {
-      browseLetterSel2Wrap.hidden = true;
-    }
-  } catch (_) { browseLetterSel2Wrap.hidden = true; }
-}
-
-async function runBrowseLoad() {
-  const part = browsePartSel.value;
-  const prefix = browseLetterSel2Wrap.hidden ? browseLetterSel.value : browseLetterSel2.value;
-  if (!part || !prefix) return;
-  browseMsgEl.textContent = 'Loading…';
-  browseListEl.innerHTML = '';
-  clearBrowseDetail();
-  state.browse.groups = [];
-  state.browse.selected = null;
-  try {
-    const p = new URLSearchParams({ part, prefix, limit: '300' });
-    state.browse.groups = await api('/api/gr_index_browse?' + p.toString());
-    browseMsgEl.textContent = `${state.browse.groups.length} group(s)`;
-    renderBrowseList();
-  } catch (e) {
-    browseMsgEl.textContent = 'Error: ' + e.message;
-  }
-}
-
-function renderBrowseList() {
-  browseListEl.innerHTML = '';
-  if (!state.browse.groups.length) {
-    const li = document.createElement('li');
-    li.className = 'gri-browse-empty';
-    li.textContent = 'No groups found.';
-    browseListEl.appendChild(li);
-    return;
-  }
-  for (const g of state.browse.groups) {
-    const li = document.createElement('li');
-    li.className = 'gri-browse-list-item';
-    li.dataset.gid = g.chant_group_id;
-    li.textContent = g.incipit || g.canonical_name || `group ${g.chant_group_id}`;
-    li.addEventListener('click', () => selectBrowseGroup(g));
-    browseListEl.appendChild(li);
-  }
-}
-
-async function selectBrowseGroup(g) {
-  state.browse.selected = g;
-  state.browse.chants = [];
-  state.browse.selectedChant = null;
-  browseListEl.querySelectorAll('.gri-browse-list-item').forEach(li => {
-    li.classList.toggle('active', li.dataset.gid == g.chant_group_id);
-  });
-  browseDetailMetaEl.innerHTML =
-    `<strong>${escapeHtml(g.incipit || g.canonical_name || '')}</strong>`;
-  browseChantUl.innerHTML = '<li class="gri-browse-empty">Loading…</li>';
-  browseChantListEl.hidden = false;
-  browseDetailEngravEl.innerHTML = '';
-  browseDetailActionsEl.hidden = true;
-  try {
-    state.browse.chants = await api(`/api/chant_groups/${g.chant_group_id}/gregobase_chants`);
-  } catch (_) { state.browse.chants = []; }
-  if (!state.browse.chants.length && g.best_gregobase_id) {
-    state.browse.chants = [{ gregobase_id: g.best_gregobase_id, mode: g.best_mode,
-      version: g.best_version, gabc_body: g.best_gabc_body }];
-  }
-  renderBrowseChantList();
-  if (state.browse.chants.length === 1) selectBrowseChant(state.browse.chants[0]);
-}
-
-function renderBrowseChantList() {
-  const chants = state.browse.chants;
-  browseChantUl.innerHTML = '';
-  if (!chants.length) {
-    browseChantListEl.hidden = true;
-    return;
-  }
-  if (chants.length === 1) { browseChantListEl.hidden = true; return; }
-  browseChantListEl.hidden = false;
-  for (const c of chants) {
-    const li = document.createElement('li');
-    li.className = 'gri-browse-chant-item';
-    li.dataset.gbid = c.gregobase_id;
-    li.innerHTML =
-      `<span class="gri-chant-version">${escapeHtml(c.version || '—')}</span>` +
-      (c.mode ? ` <span class="mgp-badge">mode ${escapeHtml(c.mode)}</span>` : '') +
-      ` <span class="gri-gb-id">#${c.gregobase_id}</span>`;
-    li.addEventListener('click', () => selectBrowseChant(c));
-    browseChantUl.appendChild(li);
-  }
-}
-
-function selectBrowseChant(c) {
-  state.browse.selectedChant = c;
-  browseChantUl.querySelectorAll('.gri-browse-chant-item').forEach(li => {
-    li.classList.toggle('active', li.dataset.gbid == c.gregobase_id);
-  });
-  browseDetailEngravEl.innerHTML = '';
-  if (c.gabc_body) renderGabc(c.gabc_body, browseDetailEngravEl);
-  else browseDetailEngravEl.innerHTML = '<em class="render-note">No GABC</em>';
-  browseDetailActionsEl.hidden = false;
-}
-
-function clearBrowseDetail() {
-  browseDetailMetaEl.innerHTML = '';
-  browseChantUl.innerHTML = '';
-  browseChantListEl.hidden = true;
-  browseDetailEngravEl.innerHTML = '';
-  browseDetailActionsEl.hidden = true;
-  state.browse.chants = [];
-  state.browse.selectedChant = null;
-}
-
-browseCloseBtnEl.addEventListener('click', () => { browsePanelEl.hidden = true; });
-browseLetterSel.addEventListener('change', async () => { await loadBrowseLetter2(); runBrowseLoad(); });
-browseLetterSel2.addEventListener('change', runBrowseLoad);
-browsePartSel.addEventListener('change', async () => {
-  await loadBrowseLetters();
-  runBrowseLoad();
-});
-
-browseAssignBtnEl.addEventListener('click', async () => {
-  if (!state.selected || !state.browse.selectedChant) return;
-  browseMsgEl.textContent = 'Assigning…';
-  const gregobaseId = state.browse.selectedChant.gregobase_id;
-  try {
+const browser = createGregobaseBrowser({
+  panel: $('gri-browse-panel'),
+  api,
+  onAssign: async gregobaseId => {
+    if (!state.selected) throw new Error('No source selected');
     const updated = await api(`/api/lit_part_sources/${state.selected.text_id}`, {
       method: 'PATCH',
       headers: { 'Content-Type': 'application/json' },
@@ -765,82 +527,46 @@ browseAssignBtnEl.addEventListener('click', async () => {
     if (idx !== -1) state.sources[idx] = updated;
     state.selected = updated;
     state.original = { ...updated };
-    browsePanelEl.hidden = true;
     seMsg.textContent = `✓ Assigned gregobase:${gregobaseId}`;
     loadChantEngraving(updated);
-  } catch (e) {
-    browseMsgEl.textContent = 'Error: ' + e.message;
-  }
+  },
 });
 
-seBrowseBtn.addEventListener('click', async () => {
+seBrowseBtn.addEventListener('click', () => {
   hidePanels();
-  browsePanelEl.hidden = false;
-  if (state.selected?.service_part) browsePartSel.value = state.selected.service_part;
-  await loadBrowseLetters();
-  runBrowseLoad();
+  browser.open({ part: state.selected?.service_part });
 });
 
-newCloseBtnEl.addEventListener('click', () => { newPanelEl.hidden = true; });
-
-newPreviewBtnEl.addEventListener('click', () => {
-  const body = extractGabcBody(newGabcEl.value.trim());
-  if (body) renderGabc(body, newPreviewDivEl);
-  else newPreviewDivEl.innerHTML = '<em class="render-note">No GABC to preview</em>';
-});
-
-newSaveBtnEl.addEventListener('click', async () => {
-  if (!state.selected) return;
-  const gabc = newGabcEl.value.trim();
-  if (!gabc) { newMsgEl.textContent = 'GABC cannot be empty.'; return; }
-  newMsgEl.textContent = 'Saving…';
-  newSaveBtnEl.disabled = true;
-  try {
-    await api(`/api/lit_part_assignments/${state.selected.text_id}/local_chant`, {
+const newChant = createNewChantPanel({
+  panel: $('gri-new-panel'),
+  onSave: async payload => {
+    if (!state.selected) throw new Error('No source selected');
+    const textId = state.selected.text_id;
+    await api(`/api/lit_part_assignments/${textId}/local_chant`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        gabc,
-        incipit: newIncipitEl.value.trim() || null,
-        mode: newModeEl.value.trim() || null,
-        version: newVersionEl.value.trim() || 'latin',
-        canonical_name: newNameEl.value.trim() || null,
-      }),
+      body: JSON.stringify(payload),
     });
     // Re-fetch the source to get updated chant_uuid
-    const textId = state.selected.text_id;
     const updated = await api(`/api/lit_part_sources/${textId}`);
     const idx = state.sources.findIndex(x => x.text_id === textId);
     if (idx !== -1) state.sources[idx] = updated;
     state.selected = updated;
     state.original = { ...updated };
-    newPanelEl.hidden = true;
     seMsg.textContent = '✓ New local chant created and assigned';
     loadChantEngraving(updated);
-  } catch (e) {
-    newMsgEl.textContent = 'Error: ' + e.message;
-  } finally {
-    newSaveBtnEl.disabled = false;
-  }
+  },
 });
 
 seNewBtn.addEventListener('click', () => {
   hidePanels();
-  newIncipitEl.value = state.selected ? (state.selected.original_text || '').slice(0, 60) : '';
-  newModeEl.value = '';
-  newVersionEl.value = 'latin';
-  newNameEl.value = '';
-  newGabcEl.value = '';
-  newPreviewDivEl.innerHTML = '';
-  newMsgEl.textContent = '';
-  newPanelEl.hidden = false;
-  newGabcEl.focus();
+  newChant.open({ incipit: (state.selected?.original_text || '').slice(0, 60) });
 });
 
 // ── Init ─────────────────────────────────────────────────────────────────────
 (async function init() {
   buildHandles();
-  await Promise.all([loadParts(), loadBrowseParts(), loadBooks()]);
+  await Promise.all([loadParts(), browser.init(), loadBooks()]);
   await loadList();
 
   // Select a source via URL hash (e.g. /sources#123) — used by assignment review links

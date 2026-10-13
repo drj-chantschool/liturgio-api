@@ -64,38 +64,6 @@ function escHtml(s) {
   }[c]));
 }
 
-// ── GABC rendering (mirrors app.js) ──────────────────────────────────────────
-function renderGabc(gabcBody, container) {
-  if (typeof exsurge === 'undefined') {
-    container.innerHTML = '<em class="render-note">exsurge not loaded — check network</em>';
-    return;
-  }
-  const body = (gabcBody || '').trim();
-  if (!body) {
-    container.innerHTML = '<em class="render-note">No notation</em>';
-    return;
-  }
-  requestAnimationFrame(() => {
-    const rect = container.getBoundingClientRect();
-    const w = Math.max((rect.width || container.clientWidth) - 32, 300);
-    try {
-      const ctxt = new exsurge.ChantContext();
-      const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, body);
-      const score = new exsurge.ChantScore(ctxt, mappings, true);
-      score.performLayout(ctxt);
-      score.layoutChantLines(ctxt, w, () => {
-        try {
-          container.innerHTML = score.createSvg(ctxt);
-        } catch (err) {
-          container.innerHTML = `<em class="render-note error">Draw error: ${escHtml(err.message)}</em>`;
-        }
-      });
-    } catch (err) {
-      container.innerHTML = `<em class="render-note error">Render error: ${escHtml(err.message)}</em>`;
-    }
-  });
-}
-
 // ── Fetch + render a day ─────────────────────────────────────────────────────
 async function loadDay() {
   const dateStr = toDateInputValue(state.date);
@@ -315,7 +283,7 @@ async function loadChantNotation(uuid, container) {
       _chantCache.set(uuid, chant);
     }
     container.innerHTML = '';
-    renderGabc(chant.gabc_body, container);
+    renderGabc(chant.gabc_body, container, chant.verses_html);
   } catch (err) {
     container.innerHTML = `<em class="render-note error">${escHtml(err.message)}</em>`;
   }

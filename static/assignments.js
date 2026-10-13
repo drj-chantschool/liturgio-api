@@ -301,43 +301,6 @@ function escapeHtml(s) {
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 }
 
-// ── GABC rendering ────────────────────────────────────────────────────────────
-function renderGabc(gabcBody, container) {
-  if (typeof exsurge === 'undefined') {
-    container.innerHTML = '<em class="render-note">exsurge not loaded</em>';
-    return;
-  }
-  if (!gabcBody) {
-    container.innerHTML = '<em class="render-note">No GABC</em>';
-    return;
-  }
-  container.innerHTML = '<em class="render-note">Rendering…</em>';
-  requestAnimationFrame(() => {
-    const w = Math.max((container.clientWidth || 700) - 32, 300);
-    try {
-      const ctxt = new exsurge.ChantContext();
-      const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, gabcBody);
-      const score = new exsurge.ChantScore(ctxt, mappings, true);
-      score.performLayout(ctxt);
-      score.layoutChantLines(ctxt, w, () => {
-        try {
-          container.innerHTML = score.createSvg(ctxt);
-        } catch (err) {
-          container.innerHTML = `<em class="render-note">Render error: ${escapeHtml(err.message)}</em>`;
-        }
-      });
-    } catch (err) {
-      container.innerHTML = `<em class="render-note">Render error: ${escapeHtml(err.message)}</em>`;
-    }
-  });
-}
-
-function extractGabcBody(gabc) {
-  if (!gabc) return '';
-  const parts = gabc.split('%%');
-  return parts.length > 1 ? parts[parts.length - 1].trim() : gabc.trim();
-}
-
 // ── Source dropdowns ──────────────────────────────────────────────────────────
 async function loadSources() {
   let data;
@@ -866,7 +829,7 @@ function renderWorkflow(data) {
       cwChantFoundAt.textContent = '';
     }
     if (c.gabc_body) {
-      renderGabc(c.gabc_body, cwChantEngrav);
+      renderGabc(c.gabc_body, cwChantEngrav, c.verses_html);
     } else {
       cwChantEngrav.innerHTML = '<em class="render-note">No GABC</em>';
     }
@@ -1137,9 +1100,6 @@ function selectSimilarResult(r) {
 
 cwFindSimilarBtn.addEventListener('click', openSimilarModal);
 simClose.addEventListener('click', closeSimilarModal);
-simModal.addEventListener('click', e => {
-  if (e.target === simModal) closeSimilarModal();
-});
 document.addEventListener('keydown', e => {
   if (e.key === 'Escape' && !simModal.hidden) closeSimilarModal();
 });

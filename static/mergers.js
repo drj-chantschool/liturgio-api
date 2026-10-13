@@ -23,37 +23,6 @@ function escHtml(s) {
     .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
-function renderGabc(gabcBody, container) {
-  if (!gabcBody) {
-    container.innerHTML = '<em class="render-note">(no notation)</em>';
-    return;
-  }
-  if (typeof exsurge === 'undefined') {
-    container.innerHTML = '<em class="render-note">exsurge not loaded</em>';
-    return;
-  }
-  container.innerHTML = '<em class="render-note">Rendering…</em>';
-  requestAnimationFrame(() => {
-    const rect = container.getBoundingClientRect();
-    const w = Math.max((rect.width || container.clientWidth) - 24, 260);
-    try {
-      const ctxt = new exsurge.ChantContext();
-      const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, gabcBody);
-      const score = new exsurge.ChantScore(ctxt, mappings, true);
-      score.performLayout(ctxt);
-      score.layoutChantLines(ctxt, w, () => {
-        try {
-          container.innerHTML = score.createSvg(ctxt);
-        } catch (err) {
-          container.innerHTML = `<em class="render-note">Draw error: ${escHtml(err.message)}</em>`;
-        }
-      });
-    } catch (err) {
-      container.innerHTML = `<em class="render-note">Render error: ${escHtml(err.message)}</em>`;
-    }
-  });
-}
-
 // ── API ───────────────────────────────────────────────────────────────────────
 async function apiFetch(url, opts = {}) {
   const res = await fetch(url, opts);
@@ -295,8 +264,8 @@ function buildCard(pair, isManual = false) {
 
   // Render GABC after the card is in the DOM
   requestAnimationFrame(() => {
-    renderGabc(ga.rep_gabc_body, panelA.querySelector('.mgp-gabc'));
-    renderGabc(gb.rep_gabc_body, panelB.querySelector('.mgp-gabc'));
+    renderGabc(ga.rep_gabc_body, panelA.querySelector('.mgp-gabc'), ga.rep_verses_html);
+    renderGabc(gb.rep_gabc_body, panelB.querySelector('.mgp-gabc'), gb.rep_verses_html);
   });
 
   return card;
