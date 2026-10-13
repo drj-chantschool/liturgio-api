@@ -1,120 +1,64 @@
 # Hosting & Deployment Plan
 
-Plan for moving `liturgio-api` and the `liturgio` MySQL database off local dev
-and onto DigitalOcean, as a step toward releasing apps that use it as a data
-backend.
+**Done (2026-10-12):** `liturgio-api` runs on DO App Platform from the `prod`
+branch against a read-only copy of `liturgio` in DO Managed MySQL. Page images
+are served from Spaces, the DB firewall is scoped to the app plus the admin IP,
+and DO's daily backups are confirmed running. Details are in the 2026-10-12
+entry of `../maintenance.md`.
 
-## Decisions
+## Current setup (reference)
 
-- **Provider: DigitalOcean.** Managed MySQL + App Platform + Spaces beats the
-  AWS RDS / Google Cloud SQL / PlanetScale alternatives on cost for our data
-  size, without requiring a database-engine migration (stays MySQL,
-  no rewrite of `app.py`'s SQLAlchemy/`mysql-connector-python` code).
-- **Managed database, not a self-managed Droplet.** We're trading ~$3-8/mo
-  for automated backups and no OS/DB patching burden.
-- **No HA (high availability) yet.** HA = a live standby replica in another
-  AZ that takes over automatically on failure, avoiding downtime. DO's HA
-  tier costs ~2x the single-node price. At our current scale a few minutes
-  of restore-from-backup downtime on failure is an acceptable tradeoff;
-  this can be upgraded later via a plan resize with no migration.
-- **Architecture stays API-mediated.** Apps talk to `liturgio-api` over
-  HTTPS; no client ever holds a DB credential, direct or otherwise.
-- **`books.image_blob` moves out of the database** and into DO Spaces.
-  It's a 395MB internal proofreading/review artifact (dpi-200 page-image
-  cache), not something a consumer app needs at runtime. This keeps the
-  Managed Database's actual working set to the app-facing tables
-  (`lit_epoch`, `lit_part_sources`, `chant_group`, `local_chants`,
-  `gregobase_*`, `psalms`, `vulgclementine_verses`, ...) at roughly 50MB.
+| Piece | Where |
+|---|---|
+| App | App Platform `liturgio-app` (`016ee61d-…`), deploys on push to `prod` |
+| DB | Managed MySQL 8.4 `db-mysql-nyc3-73323`, schema `liturgio`; app connects as `liturgio_ro` |
+| Images | Spaces `liturgio-images` (sfo3), key `books/<book>/<printed_page_num>.png`; app holds a **read-only** key (`liturgio-api-ro`) |
+| Secrets | App env vars `LITURGIO_DB_PASSWORD` and `LITURGIO_SPACES_SECRET` are type `SECRET`; local copies are in the keyring (`liturgio-mysql-do`, `liturgio-images`, `liturgio-images-ro`) |
+| Firewall | Trusted Sources: the app, plus admin IP `47.188.36.253` |
 
-## Cost
+Local MySQL is the master and DO is a copy. The prod app is read-only: every
+non-GET request returns 403.
 
-| Component | Plan | Cost |
-|---|---|---|
-| Managed MySQL | Single-node, 1 vCPU / 1GB RAM / 10GB SSD, no HA | $15/mo |
-| App Platform | Basic tier, hosts `liturgio-api` | $5/mo |
-| Spaces | 250GB object storage, for `books.image_blob` | $5/mo |
-| **Total** | | **$25/mo** |
-
-## Credential & network security
-
-Read-only path (live now):
-
-- `liturgio_ro` gets its own prod password, distinct from the local dev
-  keyring credential.
-- DB firewall **Trusted Sources** scoped to the App Platform app only —
-  the credential is useless outside that network path even if leaked.
-- Password stored as an App Platform **encrypted `SECRET` env var**
-  (never `GENERAL`, never committed to the repo).
-- TLS enforced on the connection; verify the CA cert in the SQLAlchemy
-  connection string rather than disabling verification.
-
-Write path (future — review-queue design):
-
-- Review-queue table(s) live in the **same database**, isolated by MySQL
-  grants rather than a separate instance (simpler, no extra cost).
-- The always-on public app only ever holds the RO credential and writes
-  proposals to the review queue — never directly to the real tables.
-- The full-privilege credential lives only on a secure local/admin
-  machine and is used to run a periodic **manual** pull-and-apply sync —
-  no standing service holds it.
-- Trusted Sources for that full-privilege user is scoped to the specific
-  admin IP or VPC, **not** the public App Platform app.
-- Optional: rotate the full-privilege password after each manual sync
-  session.
-
-## Backups
-
-- DO Managed MySQL includes **daily automated backups with 7-day
-  point-in-time recovery**, bundled into the $15/mo tier at no extra
-  cost. Restoring spins up a **new** cluster (not in-place), and there's
-  no export/download of the backup file — it's internal to DO.
-- This covers accidental data loss/corruption (bad write, botched sync,
-  accidental delete). It does **not** mitigate credential-leak risk —
-  that's handled separately by Trusted Sources + secret scoping above.
-- Supplement with a scheduled `mysqldump` to the Spaces bucket, giving us
-  a portable backup we actually hold, with our own retention policy
-  (e.g., keep the last 30 daily dumps) independent of DO's fixed 7-day
-  window.
+**Refreshing DO from local** (manual, as needed):
+1. `mysqldump` local `liturgio` with `--single-transaction --routines
+   --set-gtid-purged=OFF --no-tablespaces --column-statistics=0`, ignoring
+   `books` and any `*_bak_*` tables, and strip `DEFINER=` clauses.
+2. Import as `doadmin`, prefixed with
+   `SET SESSION restrict_fk_on_non_standard_key=OFF;` (needed because
+   `service_part.subservice_part_fk` references a non-unique key, which
+   MySQL 8.4 rejects by default).
+3. Recreate `books` on DO from the local DDL **minus `image_blob`** and
+   copy the other columns.
+4. If new book pages were added, run `scripts/upload_book_images_to_spaces.py`
+   (idempotent, skips existing objects).
+5. Compare row counts for every table, local vs DO.
 
 ## Todos
 
-### Phase 1 — Provision infrastructure
-- [ ] Create DO Managed MySQL cluster (single-node, no HA)
-- [ ] Create DO Spaces bucket for page images
-- [ ] Create DO App Platform app for `liturgio-api`
+- [ ] **Smoke-test the live app URL** once the first deployment finishes.
+      Run the same endpoint sweep that already passed against DO from a
+      local instance in prod mode.
+- [ ] **Decide on App Platform sizing.** The spec runs 2 × `apps-s-1vcpu-1gb`
+      (~$24/mo); the original budget assumed one $5 Basic instance.
+- [ ] **Script the refresh above** (`scripts/sync_to_do.py`) so it isn't a
+      hand-run sequence.
+- [ ] **Keep the admin IP in Trusted Sources current.** It's a residential IP;
+      if it changes, local admin access and the `liturgio-do` MCP server lose
+      access until the rule is updated.
+- [ ] **Scheduled `mysqldump` to Spaces** with our own retention (e.g. 30
+      daily dumps), as a portable backup beyond DO's fixed 7-day window.
+- [ ] **Decide whether local `books.image_blob` stays.** It's 464MB and is
+      still the local proofreading cache (and the source for uploads); DO
+      never receives it.
 
-### Phase 2 — Shrink and move the data
-- [ ] Migrate `books.image_blob` rows out to Spaces; replace the column
-      with a reference/URL
-- [ ] Update `liturgio-api` image-serving code
-      (`GET /api/books/{book}/{pdf_page_num}/image`) to fetch from Spaces
-- [ ] Dump current schema + data (excluding image blobs) and import into
-      the new Managed MySQL cluster
+## Future — write path (review queue), not started
 
-### Phase 3 — Credentials & network security
-- [ ] Create a `liturgio_ro` user on the managed cluster with its own
-      prod password
-- [ ] Configure the cluster's Trusted Sources firewall scoped to the App
-      Platform app
-- [ ] Store the `liturgio_ro` password as an App Platform encrypted
-      `SECRET` env var
-- [ ] Update `app.py`'s DB connection code: read from env vars in prod,
-      keep keyring for local dev, verify TLS/CA cert on the connection
-      string
-
-### Phase 4 — Backups
-- [ ] Verify DO's default daily backups + 7-day PITR are active on the
-      new cluster
-- [ ] Write a scheduled `mysqldump`-to-Spaces job with its own retention
-      policy (e.g., 30 daily dumps)
-
-### Phase 5 — Deploy & verify
-- [ ] Deploy `liturgio-api` to App Platform, connect to the Managed DB,
-      smoke-test all endpoints end-to-end
-
-### Phase 6 — Write-schema (future, not started)
-- [ ] Design review-queue table(s) in the same database, isolated via
-      MySQL grants
-- [ ] Create a separate full-privilege DB user for the manual sync
-      workflow, Trusted Sources restricted to admin IP/VPC only, never
-      exposed to the App Platform app
+- [ ] Review-queue table(s) in the same database, isolated by MySQL grants.
+      The public app keeps only the RO credential plus INSERT on the queue,
+      and never writes the real tables.
+- [ ] A separate full-privilege user for a periodic **manual**
+      pull-and-apply sync, held only on the admin machine, Trusted Sources
+      limited to the admin IP/VPC; optionally rotate its password after each
+      sync.
+- [ ] Lift the prod read-only guard (`_read_only_guard` / `rw()` in `app.py`)
+      only for the queue endpoints.
