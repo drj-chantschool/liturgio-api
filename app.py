@@ -1,5 +1,6 @@
 from typing import Optional, List
 import datetime
+import os
 import re
 import uuid
 import unicodedata
@@ -8,10 +9,11 @@ import keyring
 from sqlalchemy import create_engine, text
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, computed_field, model_validator
 
 from gabc_tools.gbchant import extract_gabc_body
+from gabc_tools.tex_text import verses_html
 
 app = FastAPI(title="Liturgio Chant Editor")
 
@@ -27,7 +29,32 @@ PART_NORMALIZE = {
 # ── DB ────────────────────────────────────────────────────────────────────────
 _engines: dict = {}
 
+# Prod (DO App Platform) is configured entirely by env vars; local dev falls
+# back to the OS keyring against localhost. Prod holds only the read-only
+# credential, so rw() refuses there (see DEPLOYMENT_PLAN.md).
+_DB_HOST = os.environ.get('LITURGIO_DB_HOST')
+_PROD = bool(_DB_HOST)
+# Session sql_mode pinned to local dev's, so DO's server default (ANSI:
+# "..." = identifier, || = concat) can't silently change query meaning.
+_SQL_MODE = ('ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,'
+             'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION')
+
 def _engine(user: str):
+    if user not in _engines and _PROD:
+        _engines[user] = create_engine(
+            f"mysql+mysqlconnector://{user}:{os.environ['LITURGIO_DB_PASSWORD']}"
+            f"@{_DB_HOST}:{os.environ.get('LITURGIO_DB_PORT', '25060')}"
+            f"/{os.environ.get('LITURGIO_DB_NAME', 'liturgio')}",
+            connect_args={
+                'ssl_ca': os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ca-certificate.crt'),
+                'ssl_verify_cert': True,
+                'ssl_verify_identity': True,
+                'sql_mode': _SQL_MODE,
+            },
+            future=True,
+            pool_pre_ping=True,
+            pool_recycle=1800,
+        )
     if user not in _engines:
         pw = keyring.get_password('liturgio-mysql', user)
         if not pw:
@@ -44,10 +71,39 @@ def _engine(user: str):
     return _engines[user]
 
 def ro():
-    return _engine('liturgio_ro')
+    return _engine(os.environ.get('LITURGIO_DB_USER', 'liturgio_ro'))
 
 def rw():
+    if _PROD:
+        raise HTTPException(403, "This deployment is read-only")
     return _engine('jcost')
+
+
+# Page images: in prod they live in DO Spaces (key derived from the books PK;
+# the DO books table has no image_blob column) and the API redirects to a short-lived presigned URL; locally they are
+# still served from books.image_blob.
+_SPACES_BUCKET = os.environ.get('LITURGIO_SPACES_BUCKET')
+_s3 = None
+
+def _spaces():
+    global _s3
+    if _s3 is None:
+        import boto3
+        region = os.environ.get('LITURGIO_SPACES_REGION', 'sfo3')
+        _s3 = boto3.client(
+            's3', region_name=region,
+            endpoint_url=f'https://{region}.digitaloceanspaces.com',
+            aws_access_key_id=os.environ['LITURGIO_SPACES_KEY'],
+            aws_secret_access_key=os.environ['LITURGIO_SPACES_SECRET'],
+        )
+    return _s3
+
+
+@app.middleware("http")
+async def _read_only_guard(request, call_next):
+    if _PROD and request.method not in ("GET", "HEAD", "OPTIONS"):
+        return JSONResponse({"detail": "This deployment is read-only"}, status_code=403)
+    return await call_next(request)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -68,6 +124,7 @@ class LatinRef(BaseModel):
     gregobase_id: int
     incipit: Optional[str] = None
     gabc_body: str
+    verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
     mode: Optional[str] = None
     version: Optional[str] = None
     part: Optional[str] = None
@@ -213,6 +270,7 @@ class ChantGroupSummary(BaseModel):
     office_part: Optional[str] = None
     rep_incipit: Optional[str] = None
     rep_gabc_body: Optional[str] = None
+    rep_verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
     chant_count: int = 0
 
 
@@ -352,8 +410,9 @@ def get_chant(chant_id: str):
                 raise HTTPException(404, "Chant not found")
 
             latin_rows = conn.execute(text("""
-                SELECT gc.id AS gregobase_id, gc.incipit, gc.gabc, gc.mode,
-                       gc.version, gc.`office-part` AS part, gc.transcriber
+                SELECT gc.id AS gregobase_id, gc.incipit, gc.gabc, gc.gabc_verses, gc.mode,
+                       gc.version, gc.`office-part` AS part, gc.transcriber,
+                       gc.tex_verses, gc.tex_verses_pdf
                 FROM gregobase_chants gc
                 JOIN gregobase_chant_group_map gcm ON gc.id = gcm.gregobase_id
                 WHERE gcm.chant_group_id = :gid
@@ -391,7 +450,8 @@ def get_chant(chant_id: str):
         LatinRef(
             gregobase_id=r['gregobase_id'],
             incipit=r['incipit'],
-            gabc_body=extract_gabc_body(r['gabc'] or ''),
+            gabc_body=extract_gabc_body(r['gabc'] or '', r['gabc_verses']),
+            verses_html=verses_html(r['gabc_verses'], r['tex_verses'], r['tex_verses_pdf']),
             mode=r['mode'],
             version=r['version'],
             part=r['part'],
@@ -1327,6 +1387,7 @@ class ChantUuidResult(BaseModel):
     chant_uuid: str
     incipit: Optional[str] = None
     gabc_body: str          # GABC body text ready for exsurge rendering
+    verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
     mode: Optional[str] = None
     version: Optional[str] = None
 
@@ -1346,7 +1407,7 @@ def get_chant_by_uuid(uuid: str):
         try:
             with ro().connect() as conn:
                 row = conn.execute(text("""
-                    SELECT id, incipit, gabc, mode, version
+                    SELECT id, incipit, gabc, gabc_verses, tex_verses, tex_verses_pdf, mode, version
                     FROM gregobase_chants
                     WHERE id = :gid
                 """), {'gid': gid}).mappings().fetchone()
@@ -1357,7 +1418,8 @@ def get_chant_by_uuid(uuid: str):
         return ChantUuidResult(
             chant_uuid=uuid,
             incipit=row['incipit'],
-            gabc_body=extract_gabc_body(row['gabc'] or ''),
+            gabc_body=extract_gabc_body(row['gabc'] or '', row['gabc_verses']),
+            verses_html=verses_html(row['gabc_verses'], row['tex_verses'], row['tex_verses_pdf']),
             mode=row['mode'],
             version=row['version'],
         )
@@ -1849,7 +1911,7 @@ def list_chants_in_group(group_id: int):
             """), {'gid': group_id}).mappings().fetchall()
 
             gb_rows = conn.execute(text("""
-                SELECT gc.id AS gregobase_id, gc.incipit, gc.gabc,
+                SELECT gc.id AS gregobase_id, gc.incipit, gc.gabc, gc.gabc_verses,
                        gc.mode, gc.version, gc.transcriber
                 FROM gregobase_chants gc
                 JOIN gregobase_chant_group_map gcm ON gc.id = gcm.gregobase_id
@@ -1876,7 +1938,7 @@ def list_chants_in_group(group_id: int):
             source='gregobase',
             chant_id=str(r['gregobase_id']),
             incipit=r['incipit'],
-            gabc=extract_gabc_body(r['gabc'] or ''),
+            gabc=extract_gabc_body(r['gabc'] or '', r['gabc_verses']),
             gabc_is_body=True,
             mode=r['mode'],
             version=r['version'],
@@ -1887,6 +1949,23 @@ def list_chants_in_group(group_id: int):
 
 @app.get("/api/books/{book}/{printed_page_num}/image")
 def get_book_page_image(book: str, printed_page_num: str):
+    if _SPACES_BUCKET:
+        try:
+            with ro().connect() as conn:
+                found = conn.execute(text("""
+                    SELECT 1 FROM books
+                    WHERE book = :book AND printed_page_num = :pg
+                """), {'book': book, 'pg': printed_page_num}).scalar()
+        except Exception as exc:
+            raise HTTPException(503, str(exc))
+        if not found:
+            raise HTTPException(404, "Page image not found")
+        # Key layout set by scripts/upload_book_images_to_spaces.py
+        url = _spaces().generate_presigned_url(
+            'get_object', ExpiresIn=3600, Params={
+                'Bucket': _SPACES_BUCKET, 'Key': f'books/{book}/{printed_page_num}.png'})
+        return RedirectResponse(url, status_code=302,
+                                headers={"Cache-Control": "private, max-age=3000"})
     try:
         with ro().connect() as conn:
             row = conn.execute(text("""
@@ -1953,6 +2032,7 @@ def get_chant_group_summary(group_id: int):
 
             rep = conn.execute(text("""
                 SELECT gc.incipit AS rep_incipit, gc.gabc AS rep_gabc,
+                       gc.gabc_verses, gc.tex_verses, gc.tex_verses_pdf,
                        gc.`office-part` AS office_part, gc.mode AS mode
                 FROM gregobase_chant_group_map m
                 JOIN gregobase_chants gc ON gc.id = m.gregobase_id
@@ -1981,7 +2061,8 @@ def get_chant_group_summary(group_id: int):
         mode=rep['mode'] if rep else None,
         office_part=PART_NORMALIZE.get((rep['office_part'] or '').lower()) if rep else None,
         rep_incipit=rep['rep_incipit'] if rep else None,
-        rep_gabc_body=extract_gabc_body(rep['rep_gabc'] or '') if rep else None,
+        rep_gabc_body=extract_gabc_body(rep['rep_gabc'] or '', rep['gabc_verses']) if rep else None,
+        rep_verses_html=verses_html(rep['gabc_verses'], rep['tex_verses'], rep['tex_verses_pdf']) if rep else None,
         chant_count=gb_count + lc_count,
     )
 
@@ -2106,7 +2187,8 @@ def get_merge_queue_candidates(
     try:
         with ro().connect() as conn:
             rep_rows = conn.execute(text(f"""
-                SELECT m.chant_group_id, gc.incipit AS rep_incipit, gc.gabc AS rep_gabc
+                SELECT m.chant_group_id, gc.incipit AS rep_incipit, gc.gabc AS rep_gabc,
+                       gc.gabc_verses, gc.tex_verses, gc.tex_verses_pdf
                 FROM gregobase_chant_group_map m
                 JOIN gregobase_chants gc ON gc.id = m.gregobase_id
                 WHERE m.chant_group_id IN ({id_ph}) AND gc.gabc IS NOT NULL
@@ -2141,7 +2223,8 @@ def get_merge_queue_candidates(
             mode=mode,
             office_part=part,
             rep_incipit=rep['rep_incipit'] if rep else None,
-            rep_gabc_body=extract_gabc_body(rep['rep_gabc'] or '') if rep else None,
+            rep_gabc_body=extract_gabc_body(rep['rep_gabc'] or '', rep['gabc_verses']) if rep else None,
+            rep_verses_html=verses_html(rep['gabc_verses'], rep['tex_verses'], rep['tex_verses_pdf']) if rep else None,
             chant_count=gb_cnt.get(gid, 0) + lc_cnt.get(gid, 0),
         )
 
@@ -2262,7 +2345,7 @@ def mark_merge_pair_related(body: RejectRequest):
     return {'ok': True}
 
 
-# ── GR Index review ───────────────────────────────────────────────────────────
+# ── Chant index review (GR Index page) ───────────────────────────────────────────────────────────
 
 SECTION_TO_PART_CODE = {
     'introitus': 'in', 'in': 'in',
@@ -2278,26 +2361,26 @@ SECTION_TO_PART_CODE = {
 }
 
 
-class GrIndexEntry(BaseModel):
+class ChantIndexEntry(BaseModel):
     row_id: int
-    page: Optional[int] = None           # printed page number from GR index
-    page_idx: Optional[int] = None
+    book: str
+    id: int                              # entry ordinal within the book's index
+    page: Optional[str] = None           # printed page in `book` (books.printed_page_num)
     section_type: Optional[str] = None
     mode: Optional[int] = None
     incipit: Optional[str] = None
     match_status: Optional[str] = None
-    gregobase_id: Optional[int] = None
-    local_chant_id: Optional[str] = None
-    # Joined display fields (populated in detail view)
-    gb_incipit: Optional[str] = None
-    gb_gabc_body: Optional[str] = None
-    lc_incipit: Optional[str] = None
-    lc_gabc_body: Optional[str] = None
+    chant_uuid: Optional[str] = None     # 'gregobase:<id>' or 'local:<uuid>'
+    # Joined display fields (chant_gabc_body only in the detail view)
+    chant_incipit: Optional[str] = None
+    chant_version: Optional[str] = None
+    chant_mode: Optional[str] = None
+    chant_gabc_body: Optional[str] = None
+    chant_verses_html: Optional[str] = None   # tex_verses typeset as HTML, shown under the score
 
 
-class GrIndexEntryUpdate(BaseModel):
-    gregobase_id: Optional[int] = None
-    local_chant_id: Optional[str] = None
+class ChantIndexEntryUpdate(BaseModel):
+    chant_uuid: Optional[str] = None
     match_status: Optional[str] = None
 
 
@@ -2340,6 +2423,7 @@ class CompositionChant(BaseModel):
     option_num: Optional[int] = None
     chant_uuid: str
     gabc_body: str
+    verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
     original_text: Optional[str] = None
     incipit: Optional[str] = None
     mode: Optional[str] = None
@@ -2429,46 +2513,79 @@ class GregobaseChantResult(BaseModel):
     gabc_body: Optional[str] = None
 
 
-def _gie_from_row(r, include_gabc: bool = False) -> GrIndexEntry:
-    gb_gabc_body = None
-    lc_gabc_body = None
-    if include_gabc:
-        if r['gb_gabc']:
-            gb_gabc_body = extract_gabc_body(r['gb_gabc'] or '')
-        if r['lc_gabc']:
-            lc_gabc = r['lc_gabc'] or ''
-            parts = lc_gabc.split('%%')
-            lc_gabc_body = parts[-1].strip() if len(parts) > 1 else lc_gabc.strip()
-    return GrIndexEntry(
+def _ci_from_row(r, include_gabc: bool = False) -> ChantIndexEntry:
+    gabc_body = verses = None
+    if include_gabc and r['chant_gabc']:
+        gabc_body = extract_gabc_body(r['chant_gabc'], r['chant_gabc_verses'])
+        verses = verses_html(r['chant_gabc_verses'], r['chant_tex_verses'], r['chant_tex_verses_pdf'])
+    return ChantIndexEntry(
         row_id=r['row_id'],
+        book=r['book'],
+        id=r['id'],
         page=r['page'],
-        page_idx=r['page_idx'],
         section_type=r['section_type'],
         mode=r['mode'],
         incipit=r['incipit'],
         match_status=r['match_status'],
-        gregobase_id=r['gregobase_id'],
-        local_chant_id=r['local_chant_id'],
-        gb_incipit=r['gb_incipit'] if include_gabc else None,
-        gb_gabc_body=gb_gabc_body,
-        lc_incipit=r['lc_incipit'] if include_gabc else None,
-        lc_gabc_body=lc_gabc_body,
+        chant_uuid=r['chant_uuid'],
+        chant_incipit=r['chant_incipit'],
+        chant_version=r['chant_version'],
+        chant_mode=str(r['chant_mode']) if r['chant_mode'] is not None else None,
+        chant_gabc_body=gabc_body,
+        chant_verses_html=verses,
     )
 
 
-_GIE_SELECT = """
-    SELECT gie.row_id, gie.page, gie.page_idx, gie.section_type, gie.mode, gie.incipit,
-           gie.match_status, gie.gregobase_id, gie.local_chant_id,
-           gc.incipit AS gb_incipit, gc.gabc AS gb_gabc,
-           lc.incipit AS lc_incipit, lc.gabc AS lc_gabc
-    FROM gr_index_entry gie
-    LEFT JOIN gregobase_chants gc ON gc.id = gie.gregobase_id
-    LEFT JOIN local_chants lc ON lc.local_chant_id = gie.local_chant_id
+# Joins gregobase_chants / local_chants directly rather than via v_chant_item,
+# which inner-joins the chant-group map and so hides ungrouped gregobase chants.
+_CI_SELECT = """
+    SELECT ci.row_id, ci.book, ci.id, ci.page, ci.section_type, ci.mode, ci.incipit,
+           ci.match_status, ci.chant_uuid,
+           COALESCE(gc.incipit, lc.incipit) AS chant_incipit,
+           COALESCE(gc.version, lc.version) AS chant_version,
+           COALESCE(gc.mode, lc.mode)       AS chant_mode,
+           {gabc}                           AS chant_gabc,
+           {gv}                             AS chant_gabc_verses,
+           {tv}                             AS chant_tex_verses,
+           {tvp}                            AS chant_tex_verses_pdf
+    FROM chant_indices ci
+    LEFT JOIN gregobase_chants gc
+           ON ci.chant_uuid LIKE 'gregobase:%'
+          AND gc.id = CAST(SUBSTRING(ci.chant_uuid, 11) AS UNSIGNED)
+    LEFT JOIN local_chants lc
+           ON ci.chant_uuid LIKE 'local:%'
+          AND lc.local_chant_id = SUBSTRING(ci.chant_uuid, 7)
 """
 
 
-@app.get("/api/gr_index_entries", response_model=List[GrIndexEntry])
-def list_gr_index_entries(
+def _validate_chant_uuid(conn, chant_uuid: str):
+    kind, _, key = chant_uuid.partition(':')
+    if kind == 'gregobase' and key.isdigit():
+        sql = "SELECT 1 FROM gregobase_chants WHERE id = :k"
+    elif kind == 'local' and key:
+        sql = "SELECT 1 FROM local_chants WHERE local_chant_id = :k"
+    else:
+        raise HTTPException(400, f"Malformed chant_uuid: {chant_uuid!r}")
+    if not conn.execute(text(sql), {'k': key}).fetchone():
+        raise HTTPException(400, f"No such chant: {chant_uuid}")
+
+
+@app.get("/api/chant_indices/books", response_model=List[str])
+def list_chant_index_books():
+    """Books that have entries in chant_indices."""
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text(
+                "SELECT DISTINCT book FROM chant_indices ORDER BY book"
+            )).fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return [r[0] for r in rows]
+
+
+@app.get("/api/chant_indices", response_model=List[ChantIndexEntry])
+def list_chant_index_entries(
+    book: Optional[str] = None,
     match_status: Optional[str] = None,
     q: Optional[str] = None,
     limit: int = Query(1000, le=2000),
@@ -2476,19 +2593,22 @@ def list_gr_index_entries(
 ):
     conditions = []
     params: dict = {'limit': limit, 'offset': offset}
+    if book:
+        conditions.append("ci.book = :book")
+        params['book'] = book
     if match_status == '(none)':
-        conditions.append("gie.match_status IS NULL")
+        conditions.append("ci.match_status IS NULL")
     elif match_status:
-        conditions.append("gie.match_status = :match_status")
+        conditions.append("ci.match_status = :match_status")
         params['match_status'] = match_status
     if q:
-        conditions.append("LOWER(gie.incipit) LIKE :q")
+        conditions.append("LOWER(ci.incipit) LIKE :q")
         params['q'] = f'%{q.lower()}%'
     where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
     sql = text(f"""
-        {_GIE_SELECT}
+        {_CI_SELECT.format(gabc='NULL', gv='NULL', tv='NULL', tvp='NULL')}
         {where}
-        ORDER BY gie.section_type, gie.incipit
+        ORDER BY ci.book, ci.section_type, ci.incipit
         LIMIT :limit OFFSET :offset
     """)
     try:
@@ -2496,26 +2616,28 @@ def list_gr_index_entries(
             rows = conn.execute(sql, params).mappings().fetchall()
     except Exception as exc:
         raise HTTPException(503, str(exc))
-    return [_gie_from_row(r, include_gabc=False) for r in rows]
+    return [_ci_from_row(r) for r in rows]
 
 
-@app.get("/api/gr_index_entries/{row_id}", response_model=GrIndexEntry)
-def get_gr_index_entry(row_id: int):
+@app.get("/api/chant_indices/{row_id}", response_model=ChantIndexEntry)
+def get_chant_index_entry(row_id: int):
     try:
         with ro().connect() as conn:
+            select = _CI_SELECT.format(gabc='COALESCE(gc.gabc, lc.gabc)', gv='gc.gabc_verses',
+                                       tv='gc.tex_verses', tvp='gc.tex_verses_pdf')
             row = conn.execute(
-                text(f"{_GIE_SELECT} WHERE gie.row_id = :rid"),
+                text(f"{select} WHERE ci.row_id = :rid"),
                 {'rid': row_id},
             ).mappings().fetchone()
     except Exception as exc:
         raise HTTPException(503, str(exc))
     if not row:
-        raise HTTPException(404, "GR index entry not found")
-    return _gie_from_row(row, include_gabc=True)
+        raise HTTPException(404, "Chant index entry not found")
+    return _ci_from_row(row, include_gabc=True)
 
 
-@app.patch("/api/gr_index_entries/{row_id}", response_model=GrIndexEntry)
-def update_gr_index_entry(row_id: int, body: GrIndexEntryUpdate):
+@app.patch("/api/chant_indices/{row_id}", response_model=ChantIndexEntry)
+def update_chant_index_entry(row_id: int, body: ChantIndexEntryUpdate):
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(400, "No fields to update")
@@ -2524,22 +2646,24 @@ def update_gr_index_entry(row_id: int, body: GrIndexEntryUpdate):
     params['rid'] = row_id
     try:
         with rw().begin() as conn:
+            if fields.get('chant_uuid'):
+                _validate_chant_uuid(conn, fields['chant_uuid'])
             result = conn.execute(
-                text(f"UPDATE gr_index_entry SET {set_clause} WHERE row_id = :rid"),
+                text(f"UPDATE chant_indices SET {set_clause} WHERE row_id = :rid"),
                 params,
             )
             if result.rowcount == 0:
                 exists = conn.execute(
-                    text("SELECT 1 FROM gr_index_entry WHERE row_id = :rid"),
+                    text("SELECT 1 FROM chant_indices WHERE row_id = :rid"),
                     {'rid': row_id},
                 ).fetchone()
                 if not exists:
-                    raise HTTPException(404, "GR index entry not found")
+                    raise HTTPException(404, "Chant index entry not found")
     except HTTPException:
         raise
     except Exception as exc:
         raise HTTPException(503, str(exc))
-    return get_gr_index_entry(row_id)
+    return get_chant_index_entry(row_id)
 
 
 @app.get("/api/gregobase_chants", response_model=List[GregobaseChantResult])
@@ -2550,7 +2674,8 @@ def search_gregobase_chants(
     limit: int = Query(40, le=200),
     offset: int = 0,
 ):
-    conditions = []
+    # Duplicates are hidden from GregoBase's own listings too.
+    conditions = ["gc.duplicateof IS NULL"]
     params: dict = {'limit': limit, 'offset': offset}
     if q:
         conditions.append("LOWER(gc.incipit) LIKE :q")
@@ -2564,7 +2689,7 @@ def search_gregobase_chants(
     where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
     sql = text(f"""
         SELECT gc.id, gc.incipit, gc.mode, gc.version,
-               gc.`office-part` AS part, gc.transcriber, gc.gabc
+               gc.`office-part` AS part, gc.transcriber, gc.gabc, gc.gabc_verses
         FROM gregobase_chants gc
         {where}
         ORDER BY gc.incipit, gc.id
@@ -2583,7 +2708,7 @@ def search_gregobase_chants(
             version=r['version'],
             part=r['part'],
             transcriber=r['transcriber'],
-            gabc_body=extract_gabc_body(r['gabc'] or '') if r['gabc'] else None,
+            gabc_body=extract_gabc_body(r['gabc'] or '', r['gabc_verses']) if r['gabc'] else None,
         )
         for r in rows
     ]
@@ -2608,6 +2733,7 @@ class GrIndexBrowseGroup(BaseModel):
     best_version: Optional[str] = None
     best_mode: Optional[str] = None
     best_gabc_body: Optional[str] = None
+    best_verses_html: Optional[str] = None   # tex_verses typeset as HTML, shown under the score
 
 
 class GregobaseChantEntry(BaseModel):
@@ -2617,6 +2743,7 @@ class GregobaseChantEntry(BaseModel):
     version: Optional[str] = None
     transcriber: Optional[str] = None
     gabc_body: Optional[str] = None
+    verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
 
 
 @app.get("/api/gregobase_parts")
@@ -2692,7 +2819,10 @@ def browse_gr_index_groups(
             best_gc.id      AS best_gregobase_id,
             best_gc.version AS best_version,
             best_gc.mode    AS best_mode,
-            best_gc.gabc    AS best_gabc
+            best_gc.gabc    AS best_gabc,
+            best_gc.gabc_verses    AS best_gabc_verses,
+            best_gc.tex_verses     AS best_tex_verses,
+            best_gc.tex_verses_pdf AS best_tex_verses_pdf
         FROM chant_group cg
         JOIN gregobase_chants best_gc ON best_gc.id = (
             SELECT gc2.id
@@ -2720,7 +2850,8 @@ def browse_gr_index_groups(
             best_gregobase_id=r['best_gregobase_id'],
             best_version=r['best_version'],
             best_mode=str(r['best_mode']) if r['best_mode'] is not None else None,
-            best_gabc_body=extract_gabc_body(r['best_gabc'] or '') if r['best_gabc'] else None,
+            best_gabc_body=extract_gabc_body(r['best_gabc'], r['best_gabc_verses']) if r['best_gabc'] else None,
+            best_verses_html=verses_html(r['best_gabc_verses'], r['best_tex_verses'], r['best_tex_verses_pdf']),
         )
         for r in rows
     ]
@@ -2730,11 +2861,12 @@ def browse_gr_index_groups(
 def gregobase_chants_in_group(group_id: int):
     """Return all gregobase chants for the given chant group, ordered by version preference."""
     sql = text(f"""
-        SELECT gc.id AS gregobase_id, gc.incipit, gc.mode, gc.version, gc.transcriber, gc.gabc
+        SELECT gc.id AS gregobase_id, gc.incipit, gc.mode, gc.version, gc.transcriber, gc.gabc, gc.gabc_verses,
+               gc.tex_verses, gc.tex_verses_pdf
         FROM gregobase_chants gc
         JOIN gregobase_chant_group_map gcm ON gc.id = gcm.gregobase_id
         WHERE gcm.chant_group_id = :gid
-        ORDER BY {_VERSION_RANK}, gc.id
+        ORDER BY {_VERSION_RANK.replace('gc2.', 'gc.')}, gc.id
     """)
     try:
         with ro().connect() as conn:
@@ -2748,14 +2880,15 @@ def gregobase_chants_in_group(group_id: int):
             mode=str(r['mode']) if r['mode'] is not None else None,
             version=r['version'],
             transcriber=r['transcriber'],
-            gabc_body=extract_gabc_body(r['gabc'] or '') if r['gabc'] else None,
+            gabc_body=extract_gabc_body(r['gabc'] or '', r['gabc_verses']) if r['gabc'] else None,
+            verses_html=verses_html(r['gabc_verses'], r['tex_verses'], r['tex_verses_pdf']),
         )
         for r in rows
     ]
 
 
-@app.post("/api/gr_index_entries/{row_id}/local_chant", response_model=GrIndexEntry)
-def create_local_chant_for_gr_entry(row_id: int, body: NewLocalChantRequest):
+@app.post("/api/chant_indices/{row_id}/local_chant", response_model=ChantIndexEntry)
+def create_local_chant_for_index_entry(row_id: int, body: NewLocalChantRequest):
     """Create a new local_chants row + chant_group from pasted GABC and assign to the entry."""
     gabc = body.gabc.strip()
     if not gabc:
@@ -2764,16 +2897,16 @@ def create_local_chant_for_gr_entry(row_id: int, body: NewLocalChantRequest):
     try:
         with ro().connect() as conn:
             entry = conn.execute(
-                text("SELECT row_id, section_type, mode, incipit FROM gr_index_entry WHERE row_id = :rid"),
+                text("SELECT row_id, book, section_type, mode, incipit FROM chant_indices WHERE row_id = :rid"),
                 {'rid': row_id},
             ).mappings().fetchone()
     except Exception as exc:
         raise HTTPException(503, str(exc))
     if not entry:
-        raise HTTPException(404, "GR index entry not found")
+        raise HTTPException(404, "Chant index entry not found")
 
     incipit = (body.incipit or entry['incipit'] or '').strip() or None
-    canonical_name = (body.canonical_name or incipit or f"GR index entry {row_id}").strip()
+    canonical_name = (body.canonical_name or incipit or f"{entry['book']} index entry {row_id}").strip()
     mode_val = body.mode or (str(entry['mode']) if entry['mode'] is not None else None)
     part_code = SECTION_TO_PART_CODE.get((entry['section_type'] or '').lower())
     version = (body.version or 'latin').strip()
@@ -2803,14 +2936,14 @@ def create_local_chant_for_gr_entry(row_id: int, body: NewLocalChantRequest):
             })
 
             conn.execute(text("""
-                UPDATE gr_index_entry
-                SET local_chant_id = :lid, match_status = 'reviewed'
+                UPDATE chant_indices
+                SET chant_uuid = :uuid, match_status = 'reviewed'
                 WHERE row_id = :rid
-            """), {'lid': new_id, 'rid': row_id})
+            """), {'uuid': f'local:{new_id}', 'rid': row_id})
     except Exception as exc:
         raise HTTPException(503, str(exc))
 
-    return get_gr_index_entry(row_id)
+    return get_chant_index_entry(row_id)
 
 
 @app.post("/api/lit_part_assignments/{text_id}/local_chant", response_model=LitPartAssignmentReview)
@@ -3014,7 +3147,8 @@ def _epoch_hierarchy(conn, slug: str):
     Ancestors are outermost first (season, subseason, week), including only the
     levels that apply to the epoch's own kind. Descendants are direct children in
     sort_order (season -> everything but season; subseason -> week/day/mass;
-    week -> day/mass; saint -> its Vigil Mass; day/mass have none). wknum=0 is a
+    week -> day/mass; day/saint -> its Mass leaves via lit_epoch_tree; mass has
+    none). wknum=0 is a
     real value (e.g. Ash Wednesday's week, Holy Week, the O Antiphons) so it's
     checked with `is not None`, never plain truthiness.
 
@@ -3060,13 +3194,16 @@ def _epoch_hierarchy(conn, slug: str):
             f"SELECT {_EPOCH_ROW_COLS} FROM lit_epoch WHERE season=:s AND subseason=:ss AND wknum=:w"
             " AND kind IN ('day','mass') ORDER BY sort_order, slug"
         ), {'s': season, 'ss': subseason, 'w': wknum}).mappings().fetchall()
-    elif kind in ('saint', 'common'):
+    elif kind in ('day', 'saint', 'common'):
         # Sanctorale Vigil Masses are kind='mass' with NULL season/subseason/wknum,
         # and the Commons sit outside the calendar entirely, so the temporal
         # descendant queries above can never reach either — their only link to the
         # parent is the explicit lit_epoch_tree edge. For a Commons container
         # (COM-DED, COM-SANCT, ...) that edge is what surfaces the formularies
         # underneath it; the container itself carries no lit_part_sources rows.
+        # Temporal days work the same way: their Mass leaves (Easter's -vigil/-day,
+        # Christmas's four Masses, Holy Thursday's -chrism/-supper) share the day's
+        # wknum but are only reachable from the day via lit_epoch_tree.
         desc_rows = conn.execute(text(
             f"SELECT {_EPOCH_ROW_COLS} FROM lit_epoch"
             " JOIN lit_epoch_tree t ON t.child_slug = lit_epoch.slug"
@@ -3147,7 +3284,8 @@ def epoch_composition_data(
                                pts.short_code AS translation_short_code,
                                COALESCE(lps.ref_page_num, lps.printed_page_num) AS text_page_num,
                                lps.book, lps.printed_page_num AS src_page_num,
-                               lps.bbox, lps.review_status
+                               lps.bbox, lps.review_status,
+                               lps.cycle_sun, lps.cycle_wkday
                         FROM lit_part_sources lps
                         JOIN service_part sp ON sp.part_id = lps.part_id
                         LEFT JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
@@ -3163,6 +3301,22 @@ def epoch_composition_data(
                         ORDER BY lps.option_num
                     """), {'try_slug': try_slug, 'part': part_code, 'tsrc': text_source, **wkday_params}
                     ).mappings().fetchall()
+                    # A text source may carry a cycle-specific row (e.g. the
+                    # Gregorian Missal's Year A Communion) beside its cycle-less
+                    # default. Use the requested cycle's rows when the slug has
+                    # any, otherwise the default rows — never another cycle's.
+                    if cycle_sun is not None:
+                        cyc = [r for r in t_rows if r['cycle_sun'] == cycle_sun]
+                    elif cycle_wkday is not None:
+                        cyc = [r for r in t_rows if r['cycle_wkday'] == cycle_wkday]
+                    else:
+                        cyc = []
+                    default = [r for r in t_rows
+                               if r['cycle_sun'] is None and r['cycle_wkday'] is None]
+                    if cycle_sun is None and cycle_wkday is None:
+                        t_rows = default or t_rows
+                    else:
+                        t_rows = cyc or default
                     if t_rows:
                         text_options = _collect_options(
                             t_rows,
@@ -3267,14 +3421,16 @@ def epoch_composition_data(
                             c_row = c_rows[0]
                         chant_uuid = c_row['chant_uuid']
                         gabc_body = ''
-                        incipit = mode = version = None
+                        incipit = mode = version = verses = None
                         if chant_uuid.startswith('gregobase:'):
                             gid = int(chant_uuid.split(':', 1)[1])
                             g = conn.execute(text(
-                                "SELECT incipit, gabc, mode, version FROM gregobase_chants WHERE id=:gid"
+                                "SELECT incipit, gabc, gabc_verses, tex_verses, tex_verses_pdf, mode, version"
+                                " FROM gregobase_chants WHERE id=:gid"
                             ), {'gid': gid}).mappings().fetchone()
                             if g:
-                                gabc_body = extract_gabc_body(g['gabc'] or '')
+                                gabc_body = extract_gabc_body(g['gabc'] or '', g['gabc_verses'])
+                                verses = verses_html(g['gabc_verses'], g['tex_verses'], g['tex_verses_pdf'])
                                 incipit, mode, version = g['incipit'], g['mode'], g['version']
                         elif chant_uuid.startswith('local:'):
                             lid = chant_uuid.split(':', 1)[1]
@@ -3291,6 +3447,7 @@ def epoch_composition_data(
                             option_num=c_row['option_num'] or 1,
                             chant_uuid=chant_uuid,
                             gabc_body=gabc_body,
+                            verses_html=verses,
                             original_text=c_row['original_text'],
                             incipit=incipit,
                             mode=mode,
@@ -3829,7 +3986,6 @@ def api_dashboard_coverage(scope: str = Query(default='all')):
 
 
 # ── Static / SPA ──────────────────────────────────────────────────────────────
-import os
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
 @app.get("/")

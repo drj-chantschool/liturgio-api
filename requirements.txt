@@ -3,4 +3,5 @@ uvicorn[standard]
 sqlalchemy
 mysql-connector-python
 keyring
+boto3
 gabc-tools @ git+https://github.com/drj-chantschool/gabc-tools.git
