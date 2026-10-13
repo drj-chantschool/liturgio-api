@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Profile</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/auth.js"></script>
+  <link rel="stylesheet" href="/static/profile.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Profile</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day">Day View</a>
+    </nav>
+  </header>
+
+  <main id="profile-main">
+    <section class="profile-card" id="profile-info">
+      <h2>Account</h2>
+      <div id="profile-loading">Loading…</div>
+      <dl id="profile-fields" hidden>
+        <dt>Name</dt>         <dd id="pf-display-name"></dd>
+        <dt>Username</dt>     <dd id="pf-username"></dd>
+        <dt>Role</dt>         <dd><span id="pf-role"></span><div id="pf-role-notes" class="profile-muted"></div></dd>
+        <dt>Member since</dt> <dd id="pf-created"></dd>
+      </dl>
+    </section>
+
+    <section class="profile-card">
+      <form id="password-form" autocomplete="on">
+        <h2>Change password</h2>
+        <!-- Lets password managers tie the new password to this account. -->
+        <input id="pw-username" name="username" type="text" autocomplete="username" hidden>
+        <label for="pw-current">Current password</label>
+        <input id="pw-current" name="current" type="password" autocomplete="current-password" required>
+        <label for="pw-new">New password</label>
+        <input id="pw-new" name="new" type="password" autocomplete="new-password" required minlength="10">
+        <label for="pw-confirm">Repeat new password</label>
+        <input id="pw-confirm" name="confirm" type="password" autocomplete="new-password" required>
+        <p class="profile-muted" id="pw-hint">At least 10 characters. Changing it signs you out on every other device.</p>
+        <div id="pw-error" role="alert" hidden></div>
+        <div id="pw-ok" role="status" hidden>Password changed.</div>
+        <button type="submit" class="btn-primary" id="pw-submit">Change password</button>
+      </form>
+    </section>
+  </main>
+</div>
+<script src="/static/profile.js"></script>
+</body>
+</html>

@@ -49,6 +49,28 @@ for the `PUT /api/chants/{chant_id}` save endpoint. Set them with:
     python -c "import keyring; keyring.set_password('liturgio-mysql', 'liturgio_ro', 'PASSWORD')"
     python -c "import keyring; keyring.set_password('liturgio-mysql', 'jcost', 'PASSWORD')"
 
+## Login and roles
+
+Every page and endpoint requires a login (see `auth.py`). Roles live in
+`p_app_role`: `READONLY` can view everything, `EDITOR` can also use the write
+endpoints, and `ADMIN` is reserved for user management. Users are managed from
+the command line, against local MySQL (the master). Add `--do` to mirror a
+change to the DO copy:
+
+    python manage_users.py add jdoe --role EDITOR --name "Jane Doe" [--do]
+    python manage_users.py list | roles
+    python manage_users.py passwd|disable|enable jdoe [--do]
+    python manage_users.py role jdoe ADMIN [--do]
+
+Any signed-in user, whatever their role, can change their own password at
+`/profile` (click your name in the header). Changing it signs that user out
+everywhere else. On prod this needs its own least-privilege DB user, `liturgio_auth`
+(DEPLOYMENT_PLAN.md, login rollout step 5).
+
+Session cookies are signed with `LITURGIO_SESSION_SECRET` (required in prod).
+Locally the secret is created in the keyring (`liturgio-api`/`session_secret`)
+on first run.
+
 ## Run
 
     uvicorn app:app --reload

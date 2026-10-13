@@ -1,0 +1,32 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Sign in</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <link rel="stylesheet" href="/static/login.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio</h1>
+  </header>
+
+  <main id="login-main">
+    <form id="login-form" autocomplete="on">
+      <h2>Sign in</h2>
+      <label for="login-username">Username</label>
+      <input id="login-username" name="username" type="text"
+             autocomplete="username" autocapitalize="none" spellcheck="false" required autofocus>
+      <label for="login-password">Password</label>
+      <input id="login-password" name="password" type="password"
+             autocomplete="current-password" required>
+      <div id="login-error" role="alert" hidden></div>
+      <button type="submit" class="btn-primary" id="login-submit">Sign in</button>
+    </form>
+  </main>
+</div>
+<script src="/static/login.js"></script>
+</body>
+</html>

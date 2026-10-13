@@ -622,6 +622,34 @@ select:focus { border-color: var(--accent-lt); }
 #page-nav a:hover { color: var(--header-text); }
 #page-nav a.active { color: var(--accent-lt); border-bottom-color: var(--accent-lt); }
 
+/* ── Signed-in user badge (auth.js, every page header) ─────────────── */
+#auth-badge {
+  display: flex;
+  align-items: center;
+  gap: 0.6rem;
+  font-size: 0.75rem;
+  color: #9a8f7e;
+  white-space: nowrap;
+}
+#auth-badge .auth-role {
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 0.68rem;
+  color: var(--accent-lt);
+}
+#auth-badge .auth-name { color: inherit; text-decoration: none; }
+#auth-badge .auth-name:hover { color: var(--header-text); text-decoration: underline; }
+#auth-badge button {
+  font: inherit;
+  background: none;
+  border: 1px solid #504840;
+  border-radius: 3px;
+  color: #9a8f7e;
+  padding: 0.1rem 0.5rem;
+  cursor: pointer;
+}
+#auth-badge button:hover { color: var(--header-text); border-color: var(--accent-lt); }
+
 #src-search-area { padding: 0.6rem 0.7rem; border-bottom: 1px solid #3a3730; }
 #src-search {
   width: 100%;

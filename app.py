@@ -7,11 +7,12 @@ import unicodedata
 from difflib import SequenceMatcher
 import keyring
 from sqlalchemy import create_engine, text
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, computed_field, model_validator
 
+import auth
 from gabc_tools.gbchant import extract_gabc_body
 from gabc_tools.tex_text import verses_html
 
@@ -39,10 +40,10 @@ _PROD = bool(_DB_HOST)
 _SQL_MODE = ('ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,'
              'ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION')
 
-def _engine(user: str):
+def _engine(user: str, password_env: str = 'LITURGIO_DB_PASSWORD'):
     if user not in _engines and _PROD:
         _engines[user] = create_engine(
-            f"mysql+mysqlconnector://{user}:{os.environ['LITURGIO_DB_PASSWORD']}"
+            f"mysql+mysqlconnector://{user}:{os.environ[password_env]}"
             f"@{_DB_HOST}:{os.environ.get('LITURGIO_DB_PORT', '25060')}"
             f"/{os.environ.get('LITURGIO_DB_NAME', 'liturgio')}",
             connect_args={
@@ -78,6 +79,18 @@ def rw():
         raise HTTPException(403, "This deployment is read-only")
     return _engine('jcost')
 
+def pw_writer():
+    """The only engine allowed to write in prod: liturgio_auth, which can do
+    nothing but UPDATE app_user.password_hash/session_epoch (DEPLOYMENT_PLAN.md).
+    Its own credential, so a bug in a read endpoint (running as liturgio_ro)
+    can never write. Locally jcost."""
+    if not _PROD:
+        return _engine('jcost')
+    if not os.environ.get('LITURGIO_AUTH_DB_PASSWORD'):
+        raise HTTPException(503, auth.PASSWORD_CHANGE_DISABLED)
+    return _engine(os.environ.get('LITURGIO_AUTH_DB_USER', 'liturgio_auth'),
+                   'LITURGIO_AUTH_DB_PASSWORD')
+
 
 # Page images: in prod they live in DO Spaces (key derived from the books PK;
 # the DO books table has no image_blob column) and the API redirects to a short-lived presigned URL; locally they are
@@ -101,9 +114,52 @@ def _spaces():
 
 @app.middleware("http")
 async def _read_only_guard(request, call_next):
-    if _PROD and request.method not in ("GET", "HEAD", "OPTIONS"):
+    if (_PROD and request.method not in ("GET", "HEAD", "OPTIONS")
+            and request.url.path not in auth.READ_ONLY_EXEMPT):
         return JSONResponse({"detail": "This deployment is read-only"}, status_code=403)
     return await call_next(request)
+
+
+# ── Auth ──────────────────────────────────────────────────────────────────────
+# Registered after the read-only guard, so it runs first (Starlette middleware
+# added later is outermost): anonymous requests get 401/redirect, not 403.
+_auth = auth.Auth(ro, _PROD, pw_writer=pw_writer)
+app.middleware("http")(_auth.middleware)
+
+
+class LoginRequest(BaseModel):
+    username: str
+    password: str
+
+
+@app.post("/auth/login")
+def auth_login(body: LoginRequest, request: Request):
+    return _auth.login(request, body.username, body.password)
+
+
+@app.post("/auth/logout")
+def auth_logout():
+    return _auth.logout()
+
+
+@app.get("/api/me")
+def api_me(request: Request):
+    return auth.Auth.public_user(request.state.user)
+
+
+@app.get("/api/me/profile")
+def api_me_profile(request: Request):
+    return _auth.profile(request)
+
+
+class PasswordChange(BaseModel):
+    current_password: str
+    new_password: str
+
+
+@app.post("/auth/password")
+def auth_password(body: PasswordChange, request: Request):
+    return _auth.change_password(request, body.current_password, body.new_password)
 
 
 # ── Models ────────────────────────────────────────────────────────────────────
@@ -3988,6 +4044,12 @@ def api_dashboard_coverage(scope: str = Query(default='all')):
 # ── Static / SPA ──────────────────────────────────────────────────────────────
 _STATIC_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "static")
 
+@app.get("/login")
+def login_page(request: Request, next: Optional[str] = None):
+    if _auth.current_user(request):
+        return RedirectResponse(auth.safe_next(next), status_code=303)
+    return FileResponse(os.path.join(_STATIC_DIR, "login.html"))
+
 @app.get("/")
 def root():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
@@ -4015,5 +4077,9 @@ def dashboard_page():
 @app.get("/day")
 def day_page():
     return FileResponse(os.path.join(_STATIC_DIR, "day.html"))
+
+@app.get("/profile")
+def profile_page():
+    return FileResponse(os.path.join(_STATIC_DIR, "profile.html"))
 
 app.mount("/static", StaticFiles(directory=_STATIC_DIR), name="static")
