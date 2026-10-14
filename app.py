@@ -717,6 +717,7 @@ class DayPartAssignment(BaseModel):
     display_name: str
     display_order: int
     option_num: int = 1
+    option_txt: Optional[str] = None       # printed rubric, e.g. "Vel ad libitum :"
     text_id: Optional[int] = None
     chant_uuid: Optional[str] = None
     chant_group_id: Optional[int] = None
@@ -755,7 +756,9 @@ class DayResponse(BaseModel):
 
 _DAY_PARTS_SQL = """
     WITH RECURSIVE ancestors AS (
-        SELECT :epoch_slug AS slug, 0 AS depth
+        -- CAST: a recursive CTE's column type comes from the anchor row, so a
+        -- bare short literal ('giles') would overflow/truncate longer parents.
+        SELECT CAST(:epoch_slug AS CHAR(64)) AS slug, 0 AS depth
         UNION ALL
         SELECT et.parent_slug, a.depth + 1
         FROM ancestors a JOIN lit_epoch_tree et ON et.child_slug = a.slug
@@ -763,7 +766,7 @@ _DAY_PARTS_SQL = """
     candidates AS (
         SELECT
             sp.service_code, sp.part_code, sp.display_name, sp.display_order,
-            lps.part_id, lps.text_id, lps.option_num,
+            lps.part_id, lps.text_id, lps.option_num, lps.option_txt,
             lps.jurisdiction                AS assignment_jurisdiction,
             lps.assignment_authority_code, lps.notes, lps.chant_uuid,
             COALESCE(gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
@@ -771,7 +774,8 @@ _DAY_PARTS_SQL = """
             anc.depth,
             (   (lps.cycle_wkday IS NOT NULL) +
                 (lps.cycle_sun   IS NOT NULL) +
-                (lps.wkday       IS NOT NULL)
+                (lps.wkday       IS NOT NULL) +
+                (lps.rank_code   IS NOT NULL)
             ) AS cycle_specificity,
             CASE WHEN lps.jurisdiction = :jurisdiction THEN 1 ELSE 0 END AS jur_preference
         FROM service_part sp
@@ -797,26 +801,43 @@ _DAY_PARTS_SQL = """
         AND (lps.cycle_wkday IS NULL OR lps.cycle_wkday = :cycle_wk)
         AND (lps.cycle_sun   IS NULL OR lps.cycle_sun   = :cycle_sun)
         AND (lps.wkday       IS NULL OR lps.wkday       = :wkday)
+        -- Rank-conditioned assignments (Office: "in memoriis", "in sollemnitatibus").
+        -- A base code also covers its PROPER_ variant (MEMORIAL -> PROPER_MEMORIAL).
+        AND (lps.rank_code IS NULL OR :rank_code IN (lps.rank_code, CONCAT('PROPER_', lps.rank_code)))
     ),
+    -- A part can carry several printed options (option_num 1, 2 "Vel ad
+    -- libitum", ...). First pick the winning tier per part (most specific
+    -- epoch, then jurisdiction), then return every option from that tier —
+    -- one row per option_num, best-cycle-match then text_id DESC (so the GM
+    -- twin of a GRADUALE row still wins). Partitioning by part_id alone kept
+    -- only the highest text_id, which hid option 1 whenever an option 2 existed.
     ranked AS (
         SELECT c.*,
-            ROW_NUMBER() OVER (
+            DENSE_RANK() OVER (
                 PARTITION BY c.part_id
                 ORDER BY
                     c.epoch_match       DESC,
                     c.depth             ASC,
-                    c.cycle_specificity DESC,
+                    c.jur_preference    DESC
+            ) AS tier,
+            ROW_NUMBER() OVER (
+                PARTITION BY c.part_id, COALESCE(c.option_num, 1)
+                ORDER BY
+                    c.epoch_match       DESC,
+                    c.depth             ASC,
                     c.jur_preference    DESC,
+                    c.cycle_specificity DESC,
                     c.text_id           DESC
             ) AS rn
         FROM candidates c
     )
-    SELECT service_code, part_code, display_name, display_order, option_num,
+    SELECT service_code, part_code, display_name, display_order,
+           COALESCE(option_num, 1) AS option_num, option_txt,
            text_id, chant_uuid, chant_group_id,
            assignment_authority_code, assignment_jurisdiction, notes
     FROM ranked
-    WHERE rn = 1
-    ORDER BY service_code, display_order
+    WHERE tier = 1 AND rn = 1
+    ORDER BY service_code, display_order, option_num
 """
 
 
@@ -829,6 +850,7 @@ def _day_parts_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) ->
         'cycle_sun': ctx['cycle_sun'],
         'wkday': ctx['wkday'],
         'wknum': ctx['wknum'],
+        'rank_code': ctx.get('rank_code'),
     }).mappings().fetchall()
 
     services: dict = {}
@@ -1003,7 +1025,8 @@ def get_day(date: str, jurisdiction: str = Query('US')):
             result = []
             sort_keys = []
             for obs in observances.values():
-                obs['formularies'] = _formularies_for_epoch(conn, jurisdiction, obs['epoch_slug'], ctx)
+                obs['formularies'] = _formularies_for_epoch(
+                    conn, jurisdiction, obs['epoch_slug'], {**ctx, 'rank_code': obs['rank_code']})
                 sort_keys.append(obs.pop('_rank_sort', 9999))
                 result.append(DayObservance(**obs))
     except HTTPException:

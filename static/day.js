@@ -203,33 +203,93 @@ function renderFormularyServices(formulary) {
     heading.textContent = SERVICE_LABELS[code] || code;
     group.appendChild(heading);
 
+    // The API returns one entry per printed option (option_num 1, 2 "Vel ad
+    // libitum", ...); collapse them into one block per part.
+    const byPart = new Map();
     for (const part of formulary.services[code]) {
-      group.appendChild(renderPartRow(part));
+      if (!byPart.has(part.part_code)) byPart.set(part.part_code, []);
+      byPart.get(part.part_code).push(part);
+    }
+    for (const options of byPart.values()) {
+      group.appendChild(renderPartRow(options));
     }
     serviceGroupsEl.appendChild(group);
   }
 }
 
-function renderPartRow(part) {
+function optionTabLabel(opt) {
+  const rubric = (opt.option_txt || '').replace(/\s*:\s*$/, '').trim();
+  return rubric ? `Option ${opt.option_num} · ${rubric}` : `Option ${opt.option_num}`;
+}
+
+function renderPartRow(options) {
+  const first = options[0];
   const row = document.createElement('div');
   row.className = 'part-row';
 
   const header = document.createElement('div');
   header.className = 'part-row-header';
   header.innerHTML =
-    `<span class="part-code part-${escHtml(part.part_code)}">${escHtml(part.part_code)}</span>` +
-    `<span class="part-name">${escHtml(part.display_name)}</span>` +
-    (part.option_num && part.option_num > 1 ? `<span class="part-option">option ${part.option_num}</span>` : '') +
-    (part.assignment_authority_code ? `<span class="part-authority">${escHtml(part.assignment_authority_code)}</span>` : '');
+    `<span class="part-code part-${escHtml(first.part_code)}">${escHtml(first.part_code)}</span>` +
+    `<span class="part-name">${escHtml(first.display_name)}</span>` +
+    '<span class="part-authority"></span>';
   row.appendChild(header);
+  const authorityEl = header.querySelector('.part-authority');
 
+  // Option tabs sit in the header, after the part name, hanging off its
+  // bottom edge so the active one opens into the notation pane below.
+  let tabsEl = null;
+  if (options.length > 1) {
+    tabsEl = document.createElement('div');
+    tabsEl.className = 'part-option-tabs';
+    header.insertBefore(tabsEl, authorityEl);
+  }
+
+  // One pane per option, rendered on first show: notation laid out inside a
+  // hidden (zero-width) pane would come out at the wrong width.
+  const panes = options.map(opt => {
+    const pane = document.createElement('div');
+    pane.className = 'part-option-pane';
+    pane.hidden = true;
+    row.appendChild(pane);
+    return { opt, pane, rendered: false };
+  });
+
+  const show = (idx) => {
+    panes.forEach((p, i) => { p.pane.hidden = i !== idx; });
+    tabsEl?.querySelectorAll('.part-option-tab').forEach((b, i) =>
+      b.classList.toggle('active', i === idx));
+    const p = panes[idx];
+    authorityEl.textContent = p.opt.assignment_authority_code || '';
+    if (!p.rendered) {
+      p.rendered = true;
+      renderOptionPane(p.opt, p.pane);
+    }
+  };
+
+  if (tabsEl) {
+    options.forEach((opt, i) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'part-option-tab';
+      btn.textContent = optionTabLabel(opt);
+      btn.addEventListener('click', () => show(i));
+      tabsEl.appendChild(btn);
+    });
+  }
+  show(0);
+
+  return row;
+}
+
+function renderOptionPane(part, pane) {
   const notationCol = document.createElement('div');
   notationCol.className = 'part-notation-col';
   notationCol.innerHTML =
     '<div class="part-col-label">Notation' +
     '<select class="part-version-select" hidden></select>' +
     '</div><div class="part-notation-body">&hellip;</div>';
-  row.appendChild(notationCol);
+  pane.appendChild(notationCol);
 
   setupVersionSelector(
     part,
@@ -241,10 +301,8 @@ function renderPartRow(part) {
     const notes = document.createElement('div');
     notes.className = 'part-notes';
     notes.textContent = part.notes;
-    row.appendChild(notes);
+    pane.appendChild(notes);
   }
-
-  return row;
 }
 
 // ── Chant version selector ───────────────────────────────────────────────────

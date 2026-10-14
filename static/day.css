@@ -198,10 +198,35 @@
 .part-code.part-co { background: #1a2a3a; color: #5aaac8; }
 
 .part-name { font-size: 0.88rem; color: var(--text); }
-.part-option {
-  font-size: 0.68rem;
+
+/* Tabs live inside .part-row-header and are pulled down over its padding and
+   bottom border, so they sit on the header's lower edge. The active tab's
+   bottom border takes the pane colour, "opening" it into the notation below. */
+.part-option-tabs {
+  display: flex;
+  align-self: flex-end;
+  gap: 0.2rem;
+  margin: 0 0 calc(-0.4rem - 1px) 0.5rem;
+}
+.part-option-tab {
+  padding: 0.22rem 0.65rem;
+  background: transparent;
+  border: 1px solid var(--border);
+  border-bottom-color: var(--border);
+  border-radius: 5px 5px 0 0;
   color: var(--text-muted);
-  font-style: italic;
+  font-size: 0.72rem;
+  font-family: inherit;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.12s, background 0.12s;
+}
+.part-option-tab:hover { color: var(--accent); background: rgba(255, 255, 255, 0.35); }
+.part-option-tab.active {
+  background: var(--editor-bg);
+  border-bottom-color: var(--editor-bg);
+  color: var(--text);
+  cursor: default;
 }
 .part-authority {
   margin-left: auto;
