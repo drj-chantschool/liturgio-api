@@ -387,8 +387,8 @@ async function setupVersionSelector(part, selectEl, notationBodyEl) {
 
 // ── Right-click "Edit" menu for local chants ─────────────────────────────────
 // Local (non-gregobase) chants are editable in the main Chant Editor
-// (index.html), which loads whatever chant is named in the URL hash — see
-// app.js's init and assignments.js's "Edit" link (`/#${local_chant_id}`,
+// (index.html, served at /editor), which loads whatever chant is named in the URL hash — see
+// app.js's init and assignments.js's "Edit" link (`/editor#${local_chant_id}`,
 // target=_blank). Here that same jump lives on a right-click context menu
 // instead of a button, scoped to whichever version is currently rendered.
 const chantContextMenu = document.createElement('div');
@@ -410,7 +410,7 @@ serviceGroupsEl.addEventListener('contextmenu', (e) => {
   const localId = uuid.slice('local:'.length);
   chantContextMenu.innerHTML = '<button type="button" class="ctx-menu-item">Edit chant…</button>';
   chantContextMenu.querySelector('.ctx-menu-item').addEventListener('click', () => {
-    window.open(`/#${localId}`, '_blank');
+    window.open(`/editor#${localId}`, '_blank');
   });
   chantContextMenu.style.left = `${e.pageX}px`;
   chantContextMenu.style.top = `${e.pageY}px`;

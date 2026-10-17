@@ -6,7 +6,7 @@ import uuid
 import unicodedata
 from difflib import SequenceMatcher
 import keyring
-from sqlalchemy import create_engine, text
+from sqlalchemy import bindparam, create_engine, text
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
@@ -2966,6 +2966,376 @@ def gregobase_chants_in_group(group_id: int):
     ]
 
 
+# ── Chant browser (/browse) ──────────────────────────────────────────────────
+# GregoBase-style browsing over gregobase_chants ∪ local_chants, one card per
+# chant_group (versions of the same chant collapse together; ungrouped
+# gregobase chants become their own card, keyed 'gb<id>').
+
+_U = "utf8mb4_0900_ai_ci"
+
+def _u(expr: str) -> str:
+    """gregobase_chants is utf8mb3_unicode_ci; fold it to local_chants' collation for the UNION."""
+    return f"CONVERT({expr} USING utf8mb4) COLLATE {_U}"
+
+# local_chants.office_part holds both gregobase codes and full Latin names.
+_LOCAL_PART_NAMES = {
+    'introitus': 'in', 'graduale': 'gr', 'alleluia': 'al', 'tractus': 'tr',
+    'sequentia': 'se', 'offertorium': 'of', 'communio': 'co', 'antiphona': 'an',
+    'hymnus': 'hy', 'responsorium': 're', 'kyriale': 'ky', 'psalmus': 'ps',
+    'canticum': 'ca',
+}
+_LOCAL_PART_SQL = ("CASE LOWER(lc.office_part) "
+                   + " ".join(f"WHEN '{k}' THEN '{v}'" for k, v in _LOCAL_PART_NAMES.items())
+                   + " ELSE lc.office_part END")
+
+def _mode_sql(col: str) -> str:
+    """Fold stray mode spellings ('8.', 'VIII') onto the plain digit."""
+    t = f"TRIM(TRAILING '.' FROM {col})"
+    roman = " ".join(f"WHEN '{r}' THEN '{i}'" for i, r in enumerate(
+        ['I', 'II', 'III', 'IV', 'V', 'VI', 'VII', 'VIII'], start=1))
+    return f"CASE {t} {roman} ELSE {t} END"
+
+_BROWSE_RANK = """
+    CASE
+        WHEN src = 'gregobase' AND version = 'Solesmes 1974' THEN 1
+        WHEN src = 'gregobase' AND version = 'Solesmes 1961' THEN 2
+        WHEN src = 'gregobase' AND version = 'Solesmes'      THEN 3
+        WHEN src = 'gregobase' AND version = 'Vatican'       THEN 4
+        WHEN src = 'local'                                   THEN 5
+        ELSE 6
+    END
+"""
+
+
+def _like_escape(s: str) -> str:
+    return s.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
+
+
+def _browse_ctes(q: str, match: str, part: Optional[str], mode: Optional[str],
+                 used: bool, with_text: bool = False):
+    """CTEs shared by the list and facet queries.
+    v = every chant version; f = versions passing the filters (with gkey);
+    ug = keys of groups with any version assigned in lit_part_sources."""
+    text_g = f"{_u('t.text_decode')} AS body" if with_text else "NULL AS body"
+    text_join = "LEFT JOIN gregobase_chants_texts t ON t.id = gc.id" if with_text else ""
+    conds, params = [], {}
+    q = (q or '').strip()
+    if q:
+        if match == 'text':
+            for i, w in enumerate(q.split()):
+                conds.append(f"COALESCE(v.body, v.incipit) LIKE :w{i}")
+                params[f'w{i}'] = f'%{_like_escape(w)}%'
+        else:
+            conds.append("v.incipit LIKE :q")
+            params['q'] = f'{_like_escape(q)}%'
+    if part:
+        if part == 'none':
+            conds.append("(v.part IS NULL OR v.part = '')")
+        else:
+            conds.append("v.part = :part")
+            params['part'] = part
+    if mode:
+        if mode == 'none':
+            conds.append("(v.mode IS NULL OR v.mode = '')")
+        else:
+            conds.append("v.mode = :mode")
+            params['mode'] = mode
+    if used:
+        conds.append("v.gkey IN (SELECT gkey FROM ug)")
+    where = ('WHERE ' + ' AND '.join(conds)) if conds else ''
+    sql = f"""
+        WITH v0 AS (
+            SELECT 'gregobase' AS src,
+                   CAST(gc.id AS CHAR) COLLATE {_U} AS cid,
+                   gcm.chant_group_id AS gid,
+                   {_u('gc.incipit')} AS incipit,
+                   {_u('gc.`office-part`')} AS part,
+                   {_mode_sql(_u('gc.mode'))} AS mode,
+                   {_u('gc.version')} AS version,
+                   {text_g}
+            FROM gregobase_chants gc
+            LEFT JOIN gregobase_chant_group_map gcm ON gcm.gregobase_id = gc.id
+            {text_join}
+            WHERE gc.duplicateof IS NULL
+            UNION ALL
+            SELECT 'local', lc.local_chant_id, lc.chant_group_id, lc.incipit,
+                   {_LOCAL_PART_SQL}, {_mode_sql('lc.mode')}, lc.version, NULL
+            FROM local_chants lc
+        ),
+        v AS (
+            SELECT v0.*,
+                   COALESCE(CAST(v0.gid AS CHAR), CONCAT('gb', v0.cid)) COLLATE {_U} AS gkey,
+                   CONCAT(v0.src, ':', v0.cid) COLLATE {_U} AS chant_uuid
+            FROM v0
+        ),
+        ug AS (
+            SELECT DISTINCT v.gkey
+            FROM v JOIN lit_part_sources lps ON lps.chant_uuid = v.chant_uuid
+        ),
+        f AS (SELECT v.* FROM v {where})
+    """
+    return sql, params
+
+
+class BrowseGroup(BaseModel):
+    key: str                                  # chant_group_id, or 'gb<id>' for an ungrouped gregobase chant
+    chant_group_id: Optional[int] = None
+    incipit: Optional[str] = None             # first matching version's incipit
+    canonical_name: Optional[str] = None
+    parts: List[str] = []
+    modes: List[str] = []
+    n_match: int                              # versions passing the filters
+    n_local: int = 0
+    used: bool = False                        # any version assigned in lit_part_sources
+
+
+class BrowseResponse(BaseModel):
+    total: int
+    groups: List[BrowseGroup]
+
+
+class BrowseFacet(BaseModel):
+    value: str                                # 'none' = missing
+    n: int                                    # matching chant groups
+
+
+class BrowseFacets(BaseModel):
+    parts: List[BrowseFacet]
+    modes: List[BrowseFacet]
+
+
+class BrowseSource(BaseModel):
+    title: Optional[str] = None
+    year: Optional[int] = None
+    page: Optional[str] = None
+
+
+class BrowseUsage(BaseModel):
+    chant_uuid: str
+    lit_epoch_slug: Optional[str] = None
+    epoch_title: Optional[str] = None
+    part_name: Optional[str] = None
+    book: Optional[str] = None
+    printed_page_num: Optional[str] = None
+    jurisdiction: Optional[str] = None
+    option_txt: Optional[str] = None
+
+
+class BrowseVersion(BaseModel):
+    src: str                                  # 'gregobase' | 'local'
+    chant_id: str
+    chant_uuid: str
+    incipit: Optional[str] = None
+    part: Optional[str] = None
+    mode: Optional[str] = None
+    version: Optional[str] = None
+    transcriber: Optional[str] = None
+    commentary: Optional[str] = None
+    status: Optional[str] = None              # local_chants.status
+    gabc_body: Optional[str] = None
+    verses_html: Optional[str] = None
+    sources: List[BrowseSource] = []
+    tags: List[str] = []
+
+
+class BrowseGroupDetail(BaseModel):
+    key: str
+    chant_group_id: Optional[int] = None
+    canonical_name: Optional[str] = None
+    versions: List[BrowseVersion]
+    usages: List[BrowseUsage]
+
+
+@app.get("/api/browse", response_model=BrowseResponse)
+def browse_chants(
+    q: str = '',
+    match: str = Query('prefix', pattern='^(prefix|text)$'),
+    part: Optional[str] = None,
+    mode: Optional[str] = None,
+    used: bool = False,
+    limit: int = Query(100, le=500),
+    offset: int = 0,
+):
+    """Chant groups whose versions match the filters. `match=prefix` matches the
+    incipit's start; `match=text` needs every word somewhere in the chant text
+    (gregobase_chants_texts; local chants fall back to their incipit)."""
+    ctes, params = _browse_ctes(q, match, part, mode, used, with_text=(match == 'text'))
+    params.update(limit=limit, offset=offset)
+    sql = text(ctes + f"""
+        , g AS (
+            SELECT f.gkey, MIN(f.gid) AS gid, MIN(NULLIF(TRIM(f.incipit), '')) AS incipit,
+                   GROUP_CONCAT(DISTINCT f.part ORDER BY f.part) AS parts,
+                   GROUP_CONCAT(DISTINCT f.mode ORDER BY f.mode) AS modes,
+                   COUNT(*) AS n_match, SUM(f.src = 'local') AS n_local
+            FROM f GROUP BY f.gkey
+        )
+        SELECT g.*, cg.canonical_name,
+               (g.gkey IN (SELECT gkey FROM ug)) AS used,
+               COUNT(*) OVER () AS total
+        FROM g
+        LEFT JOIN chant_group cg ON cg.chant_group_id = g.gid
+        ORDER BY g.incipit IS NULL, g.incipit, g.gkey
+        LIMIT :limit OFFSET :offset
+    """)
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(sql, params).mappings().fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return BrowseResponse(
+        total=rows[0]['total'] if rows else 0,
+        groups=[
+            BrowseGroup(
+                key=r['gkey'],
+                chant_group_id=r['gid'],
+                incipit=r['incipit'],
+                canonical_name=r['canonical_name'],
+                parts=[p for p in (r['parts'] or '').split(',') if p],
+                modes=[m for m in (r['modes'] or '').split(',') if m],
+                n_match=r['n_match'],
+                n_local=int(r['n_local'] or 0),
+                used=bool(r['used']),
+            )
+            for r in rows
+        ],
+    )
+
+
+@app.get("/api/browse/facets", response_model=BrowseFacets)
+def browse_facets(
+    q: str = '',
+    match: str = Query('prefix', pattern='^(prefix|text)$'),
+    part: Optional[str] = None,
+    mode: Optional[str] = None,
+    used: bool = False,
+):
+    """Every office-part and mode present in the data, with the number of chant
+    groups each would show given the OTHER active filters."""
+    out = {}
+    for facet, col, keep in (('parts', 'part', {'mode': mode}), ('modes', 'mode', {'part': part})):
+        ctes, params = _browse_ctes(q, match, keep.get('part'), keep.get('mode'), used,
+                                    with_text=(match == 'text'))
+        sql = text(ctes + f"""
+            SELECT COALESCE(NULLIF(a.val, ''), 'none') AS val, COALESCE(c.n, 0) AS n
+            FROM (SELECT DISTINCT NULLIF(v.{col}, '') AS val FROM v) a
+            LEFT JOIN (SELECT NULLIF(f.{col}, '') AS val, COUNT(DISTINCT f.gkey) AS n
+                       FROM f GROUP BY NULLIF(f.{col}, '')) c
+                   ON c.val <=> a.val
+        """)
+        try:
+            with ro().connect() as conn:
+                rows = conn.execute(sql, params).mappings().fetchall()
+        except Exception as exc:
+            raise HTTPException(503, str(exc))
+        out[facet] = [BrowseFacet(value=r['val'], n=r['n']) for r in rows]
+    return BrowseFacets(**out)
+
+
+@app.get("/api/browse/group/{key}", response_model=BrowseGroupDetail)
+def browse_group_detail(key: str):
+    """All versions of one browse card (gregobase + local), best edition first,
+    with each gregobase version's printed sources/tags, and every
+    lit_part_sources row that assigns any of them."""
+    if key.isdigit():
+        gid, gb_only = int(key), None
+    elif key.startswith('gb') and key[2:].isdigit():
+        gid, gb_only = None, int(key[2:])
+    else:
+        raise HTTPException(400, "key must be a chant_group_id or 'gb<gregobase id>'")
+    gb_where = "gcm.chant_group_id = :gid" if gid is not None else "gc.id = :gbid"
+    params = {'gid': gid, 'gbid': gb_only}
+    versions_sql = text(f"""
+        SELECT * FROM (
+            SELECT 'gregobase' AS src, CAST(gc.id AS CHAR) COLLATE {_U} AS cid,
+                   {_u('gc.incipit')} AS incipit, {_u('gc.`office-part`')} AS part,
+                   {_mode_sql(_u('gc.mode'))} AS mode, {_u('gc.version')} AS version,
+                   {_u('gc.transcriber')} AS transcriber, {_u('gc.commentary')} AS commentary,
+                   NULL AS status, gc.gabc, gc.gabc_verses, gc.tex_verses, gc.tex_verses_pdf
+            FROM gregobase_chants gc
+            LEFT JOIN gregobase_chant_group_map gcm ON gcm.gregobase_id = gc.id
+            WHERE gc.duplicateof IS NULL AND {gb_where}
+            UNION ALL
+            SELECT 'local', lc.local_chant_id, lc.incipit, {_LOCAL_PART_SQL}, {_mode_sql('lc.mode')},
+                   lc.version, lc.transcriber, lc.commentary, lc.status,
+                   lc.gabc, NULL, NULL, NULL
+            FROM local_chants lc
+            WHERE lc.chant_group_id = :gid
+        ) x
+        ORDER BY {_BROWSE_RANK}, src, cid
+    """)
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(versions_sql, params).mappings().fetchall()
+            if not rows:
+                raise HTTPException(404, f"No chants for browse key {key!r}")
+            gb_ids = [int(r['cid']) for r in rows if r['src'] == 'gregobase']
+            uuids = [f"{r['src']}:{r['cid']}" for r in rows]
+            sources: dict = {}
+            tags: dict = {}
+            if gb_ids:
+                for s in conn.execute(text("""
+                    SELECT cs.chant_id, s.title, s.year, cs.page
+                    FROM gregobase_chant_sources cs
+                    JOIN gregobase_sources s ON s.id = cs.source
+                    WHERE cs.chant_id IN :ids
+                    ORDER BY s.year, s.title
+                """).bindparams(bindparam('ids', expanding=True)), {'ids': gb_ids}).mappings():
+                    sources.setdefault(s['chant_id'], []).append(
+                        BrowseSource(title=s['title'], year=s['year'], page=s['page']))
+                for t in conn.execute(text("""
+                    SELECT ct.chant_id, tg.tag
+                    FROM gregobase_chant_tags ct JOIN gregobase_tags tg ON tg.id = ct.tag_id
+                    WHERE ct.chant_id IN :ids ORDER BY tg.tag
+                """).bindparams(bindparam('ids', expanding=True)), {'ids': gb_ids}).mappings():
+                    tags.setdefault(t['chant_id'], []).append(t['tag'])
+            usages = conn.execute(text("""
+                SELECT lps.chant_uuid, lps.lit_epoch_slug, le.title AS epoch_title,
+                       sp.display_name AS part_name, lps.book, lps.printed_page_num,
+                       lps.jurisdiction, lps.option_txt
+                FROM lit_part_sources lps
+                LEFT JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
+                LEFT JOIN service_part sp ON sp.part_id = lps.part_id
+                WHERE lps.chant_uuid IN :uuids
+                ORDER BY COALESCE(le.sort_order, 9999), lps.lit_epoch_slug, sp.display_order, lps.book
+            """).bindparams(bindparam('uuids', expanding=True)), {'uuids': uuids}).mappings().fetchall()
+            cg = conn.execute(text("SELECT canonical_name FROM chant_group WHERE chant_group_id = :gid"),
+                              {'gid': gid}).scalar() if gid is not None else None
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+
+    def body(r):
+        if not r['gabc']:
+            return None
+        if r['src'] == 'local':   # local_chants.gabc is a header + '%%' + body file
+            parts = r['gabc'].split('%%')
+            return parts[-1].strip() if len(parts) > 1 else r['gabc'].strip()
+        return extract_gabc_body(r['gabc'], r['gabc_verses'])
+
+    return BrowseGroupDetail(
+        key=key,
+        chant_group_id=gid,
+        canonical_name=cg,
+        versions=[
+            BrowseVersion(
+                src=r['src'], chant_id=r['cid'], chant_uuid=f"{r['src']}:{r['cid']}",
+                incipit=r['incipit'], part=r['part'],
+                mode=str(r['mode']) if r['mode'] is not None else None,
+                version=r['version'], transcriber=r['transcriber'],
+                commentary=r['commentary'], status=r['status'],
+                gabc_body=body(r),
+                verses_html=(verses_html(r['gabc_verses'], r['tex_verses'], r['tex_verses_pdf'])
+                             if r['src'] == 'gregobase' else None),
+                sources=sources.get(int(r['cid']), []) if r['src'] == 'gregobase' else [],
+                tags=tags.get(int(r['cid']), []) if r['src'] == 'gregobase' else [],
+            )
+            for r in rows
+        ],
+        usages=[BrowseUsage(**u) for u in usages],
+    )
+
+
 @app.post("/api/chant_indices/{row_id}/local_chant", response_model=ChantIndexEntry)
 def create_local_chant_for_index_entry(row_id: int, body: NewLocalChantRequest):
     """Create a new local_chants row + chant_group from pasted GABC and assign to the entry."""
@@ -4075,6 +4445,16 @@ def login_page(request: Request, next: Optional[str] = None):
 
 @app.get("/")
 def root():
+    return FileResponse(os.path.join(_STATIC_DIR, "browse.html"))
+
+@app.get("/browse")
+def browse_page(request: Request):
+    # The Chant Browser moved to /; keep old links (and their filters) working
+    q = request.url.query
+    return RedirectResponse('/' + (f'?{q}' if q else ''), status_code=301)
+
+@app.get("/editor")
+def editor_page():
     return FileResponse(os.path.join(_STATIC_DIR, "index.html"))
 
 @app.get("/sources")

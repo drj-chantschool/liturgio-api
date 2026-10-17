@@ -858,7 +858,7 @@ function renderWorkflow(data) {
       meta.textContent = metaParts.join(' · ');
       metaRow.appendChild(meta);
       const editLink = document.createElement('a');
-      editLink.href = `/#${lc.local_chant_id}`;
+      editLink.href = `/editor#${lc.local_chant_id}`;
       editLink.target = '_blank';
       editLink.textContent = 'Edit';
       editLink.className = 'btn-secondary btn-sm';

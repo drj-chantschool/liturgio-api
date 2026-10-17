@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Chant Browser</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/auth.js"></script>
+  <link rel="stylesheet" href="/static/browse.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Chant Browser</h1>
+    <nav id="page-nav">
+      <a href="/" class="active">Chant Browser</a>
+      <a href="/editor">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day">Day View</a>
+    </nav>
+  </header>
+
+  <div id="cb-scroll">
+    <div id="cb-wrap">
+
+      <!-- ── Filters ── -->
+      <section id="cb-filters">
+        <div id="cb-search-row">
+          <input type="search" id="cb-q" autocomplete="off" spellcheck="false"
+                 placeholder="Type the start of an incipit — e.g. “Ad te lev”">
+          <div class="cb-seg" id="cb-match" role="group" aria-label="Match">
+            <button type="button" data-match="prefix" class="active" title="Incipit starts with what you typed">Incipit begins</button>
+            <button type="button" data-match="text" title="Every word appears somewhere in the chant text">Words in text</button>
+          </div>
+        </div>
+
+        <div id="cb-filter-row">
+          <label class="cb-facet">
+            <span class="cb-facet-label">Part</span>
+            <select id="cb-parts"><option value="">All parts</option></select>
+          </label>
+          <label class="cb-facet">
+            <span class="cb-facet-label">Mode</span>
+            <select id="cb-modes"><option value="">All modes</option></select>
+          </label>
+          <label class="cb-check" title="Only chants assigned somewhere in lit_part_sources">
+            <input type="checkbox" id="cb-used"> In Liturgio
+          </label>
+        </div>
+      </section>
+
+      <div id="cb-summary">
+        <span id="cb-count"></span>
+        <span id="cb-keys"><kbd>/</kbd> search · <kbd>↑</kbd><kbd>↓</kbd> move · <kbd>Enter</kbd> open · <kbd>Esc</kbd> clear</span>
+      </div>
+
+      <!-- ── Results ── -->
+      <ol id="cb-results"></ol>
+      <div id="cb-sentinel"></div>
+      <div id="cb-status" class="cb-status"></div>
+
+    </div>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/chant-render.js"></script>
+<script src="/static/browse.js"></script>
+</body>
+</html>
