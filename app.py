@@ -301,6 +301,7 @@ class LitPartSource(BaseModel):
     book: Optional[str] = None
     printed_page_num: Optional[str] = None
     ref_page_num: Optional[int] = None
+    ref_book: Optional[str] = None  # book of ref_page_num when it differs from book (cross-book cue)
     ref_printed_page_num: Optional[str] = None
     bbox: Optional[str] = None
     chant_uuid: Optional[str] = None
@@ -1192,13 +1193,13 @@ _LPS_SELECT = """
            lps.wknum_mod_4, lps.wknum_mod_2,
            lps.common_of, lps.notes,
            lps.book, b.printed_page_num,
-           lps.ref_page_num, b2.printed_page_num AS ref_printed_page_num,
+           lps.ref_page_num, lps.ref_book, b2.printed_page_num AS ref_printed_page_num,
            lps.bbox, lps.chant_uuid
     FROM lit_part_sources lps
     JOIN service_part sp ON sp.part_id = lps.part_id
     LEFT JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
     LEFT JOIN books b  ON b.book  = lps.book AND b.printed_page_num = lps.printed_page_num
-    LEFT JOIN books b2 ON b2.book = lps.book AND b2.printed_page_num = lps.ref_page_num
+    LEFT JOIN books b2 ON b2.book = COALESCE(lps.ref_book, lps.book) AND b2.printed_page_num = lps.ref_page_num
 """
 
 
@@ -1227,6 +1228,7 @@ def _lps_from_row(r) -> LitPartSource:
         book=r['book'],
         printed_page_num=r['printed_page_num'],
         ref_page_num=r['ref_page_num'],
+        ref_book=r['ref_book'],
         ref_printed_page_num=r['ref_printed_page_num'],
         bbox=r['bbox'],
         chant_uuid=r['chant_uuid'],
@@ -1687,6 +1689,187 @@ def list_edit_queue(request: Request, mine: bool = False, status: Optional[str] 
     except DBAPIError as exc:
         _queue_db_error(exc)
     return [_queued_edit(r) for r in rows]
+
+
+# ── Agentic intake queue (/intake) ────────────────────────────────────────────
+# Questions parser agents can't settle alone (liturgio-tools/sql/make-intake-queue.sql has the
+# lifecycle and JSON shapes). Agents INSERT/claim/resolve directly in SQL; the API only lists
+# questions and records the human's answer.
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+_INTAKE_STATUSES = ('open', 'answered', 'claimed', 'done', 'withdrawn')
+_INTAKE_JSON = ('pages', 'chants', 'options', 'refs', 'context', 'blocks')
+
+
+class IntakeSummary(BaseModel):
+    question_id: int
+    status: str
+    priority: int
+    pipeline: str
+    book: Optional[str] = None
+    category: str
+    title: str
+    first_page: Optional[str] = None
+    page_count: int
+    raised_at: Optional[str] = None
+    answered_at: Optional[str] = None
+
+
+class IntakeItem(BaseModel):
+    question_id: int
+    status: str
+    priority: int
+    pipeline: str
+    book: Optional[str] = None
+    category: str
+    topic_key: Optional[str] = None
+    title: str
+    prompt: str
+    pages: list
+    chants: list
+    options: list
+    refs: list
+    context: list
+    blocks: list
+    parent_id: Optional[int] = None
+    raised_by: str
+    raised_at: Optional[str] = None
+    answer: Optional[str] = None
+    is_standing_rule: bool
+    answered_by: Optional[str] = None
+    answered_at: Optional[str] = None
+    claimed_by: Optional[str] = None
+    claimed_at: Optional[str] = None
+    resolution: Optional[str] = None
+    resolved_at: Optional[str] = None
+    related: list = []             # other questions sharing topic_key or parent_id
+    repo_root: Optional[str] = None  # local only, for vscode:// links to context paths
+
+
+class IntakeAnswer(BaseModel):
+    answer: Optional[str] = None   # blank/None clears the answer and reopens the question
+    is_standing_rule: bool = False
+
+
+def _iso(v):
+    return v.isoformat() if v else None
+
+
+def _intake_item(conn, qid: int) -> IntakeItem:
+    r = conn.execute(text("SELECT * FROM intake_queue WHERE question_id = :id"),
+                     {'id': qid}).mappings().first()
+    if r is None:
+        raise HTTPException(404, "Question not found")
+    related = conn.execute(text("""
+        SELECT question_id, status, title FROM intake_queue
+        WHERE question_id <> :id
+          AND ((:topic IS NOT NULL AND topic_key = :topic)
+               OR question_id = :parent OR parent_id = :id)
+        ORDER BY question_id
+    """), {'id': qid, 'topic': r['topic_key'], 'parent': r['parent_id']}).mappings().fetchall()
+    d = dict(r)
+    for c in _INTAKE_JSON:
+        d[c] = _json_col(d[c]) or []
+    for c in ('raised_at', 'answered_at', 'claimed_at', 'resolved_at'):
+        d[c] = _iso(d[c])
+    d.pop('updated_at', None)
+    d['is_standing_rule'] = bool(d['is_standing_rule'])
+    d['related'] = [dict(x) for x in related]
+    d['repo_root'] = None if _PROD else _REPO_ROOT.replace('\\', '/')
+    return IntakeItem(**d)
+
+
+@app.get("/api/intake_queue", response_model=List[IntakeSummary])
+def list_intake_queue(status: Optional[str] = 'open', book: Optional[str] = None,
+                      category: Optional[str] = None, pipeline: Optional[str] = None,
+                      q: Optional[str] = None, limit: int = Query(500, ge=1, le=2000)):
+    """Open questions come highest priority first, then oldest first; everything else newest first."""
+    where, params = [], {'lim': limit}
+    if status:
+        if status not in _INTAKE_STATUSES:
+            raise HTTPException(400, f"status must be one of {', '.join(_INTAKE_STATUSES)}")
+        where.append('status = :s')
+        params['s'] = status
+    for col, val in (('book', book), ('category', category), ('pipeline', pipeline)):
+        if val:
+            where.append(f'{col} = :{col}')
+            params[col] = val
+    if q:
+        where.append('(title LIKE :q OR prompt LIKE :q OR answer LIKE :q)')
+        params['q'] = f'%{q}%'
+    order = ('priority DESC, raised_at, question_id' if status == 'open'
+             else 'COALESCE(resolved_at, answered_at, raised_at) DESC, question_id DESC')
+    sql = (f"""SELECT question_id, status, priority, pipeline, book, category, title,
+                      JSON_UNQUOTE(JSON_EXTRACT(pages, '$[0].page')) AS first_page,
+                      JSON_LENGTH(pages) AS page_count, raised_at, answered_at
+               FROM intake_queue"""
+           + (f" WHERE {' AND '.join(where)}" if where else '')
+           + f" ORDER BY {order} LIMIT :lim")
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().fetchall()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    return [IntakeSummary(**{**r, 'raised_at': _iso(r['raised_at']),
+                             'answered_at': _iso(r['answered_at'])}) for r in rows]
+
+
+@app.get("/api/intake_queue/facets")
+def intake_queue_facets():
+    """Filter options, read from the table (never a hard-coded list)."""
+    try:
+        with ro().connect() as conn:
+            def distinct(col):
+                return [v for (v,) in conn.execute(text(
+                    f"SELECT DISTINCT {col} FROM intake_queue WHERE {col} IS NOT NULL ORDER BY {col}"))]
+            counts = dict(conn.execute(text(
+                "SELECT status, COUNT(*) FROM intake_queue GROUP BY status")).fetchall())
+            return {'books': distinct('book'), 'categories': distinct('category'),
+                    'pipelines': distinct('pipeline'),
+                    'status_counts': {s: counts.get(s, 0) for s in _INTAKE_STATUSES}}
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+
+
+@app.get("/api/intake_queue/{question_id}", response_model=IntakeItem)
+def get_intake_question(question_id: int):
+    try:
+        with ro().connect() as conn:
+            return _intake_item(conn, question_id)
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+
+
+@app.put("/api/intake_queue/{question_id}/answer", response_model=IntakeItem)
+def answer_intake_question(question_id: int, body: IntakeAnswer, request: Request):
+    """Record (or clear) the answer. Only while open/answered: once an agent has claimed the
+    question the answer is what it is acting on, so it can't change underneath it (409)."""
+    answer = (body.answer or '').strip()
+    with rw().begin() as conn:
+        if answer:
+            n = conn.execute(text("""
+                UPDATE intake_queue
+                SET answer = :a, is_standing_rule = :rule, status = 'answered',
+                    answered_by = :u, answered_at = NOW()
+                WHERE question_id = :id AND status IN ('open', 'answered')
+            """), {'a': answer, 'rule': body.is_standing_rule,
+                   'u': request.state.user['username'], 'id': question_id}).rowcount
+        else:
+            n = conn.execute(text("""
+                UPDATE intake_queue
+                SET answer = NULL, is_standing_rule = 0, status = 'open',
+                    answered_by = NULL, answered_at = NULL
+                WHERE question_id = :id AND status IN ('open', 'answered')
+            """), {'id': question_id}).rowcount
+        if not n:
+            status = conn.execute(text("SELECT status FROM intake_queue WHERE question_id = :id"),
+                                  {'id': question_id}).scalar()
+            if status is None:
+                raise HTTPException(404, "Question not found")
+            raise HTTPException(409, f"Question is {status}; its answer can no longer be changed")
+        return _intake_item(conn, question_id)
 
 
 # ── chant lookup by chant_uuid ────────────────────────────────────────────────
@@ -2741,6 +2924,7 @@ class CompositionChant(BaseModel):
     book: Optional[str] = None
     printed_page_num: Optional[str] = None
     chant_page_num: Optional[str] = None
+    chant_book: Optional[str] = None  # book of chant_page_num (differs from book for a cross-book xref)
     bbox: Optional[str] = None
     text_src: Optional[str] = None
     translation_short_code: Optional[str] = None
@@ -4045,10 +4229,12 @@ def epoch_composition_data(
                                lps.lit_epoch_slug, le.title AS epoch_title,
                                lps.book, lps.printed_page_num,
                                COALESCE(lps.ref_page_num, lps.printed_page_num) AS chant_page_num,
+                               CASE WHEN lps.ref_page_num IS NOT NULL
+                                    THEN COALESCE(lps.ref_book, lps.book) ELSE lps.book END AS chant_book,
                                COALESCE((
                                    SELECT eng.bbox FROM lit_part_sources eng
                                    WHERE lps.ref_page_num IS NOT NULL
-                                     AND eng.book = lps.book
+                                     AND eng.book = COALESCE(lps.ref_book, lps.book)
                                      AND eng.printed_page_num = lps.ref_page_num
                                      AND eng.chant_uuid = lps.chant_uuid
                                    LIMIT 1
@@ -4057,7 +4243,7 @@ def epoch_composition_data(
                                COALESCE((
                                    SELECT eng.text_src FROM lit_part_sources eng
                                    WHERE lps.ref_page_num IS NOT NULL
-                                     AND eng.book = lps.book
+                                     AND eng.book = COALESCE(lps.ref_book, lps.book)
                                      AND eng.printed_page_num = lps.ref_page_num
                                      AND eng.chant_uuid = lps.chant_uuid
                                    LIMIT 1
@@ -4135,6 +4321,7 @@ def epoch_composition_data(
                             book=c_row['book'],
                             printed_page_num=str(c_row['printed_page_num']) if c_row['printed_page_num'] is not None else None,
                             chant_page_num=str(c_row['chant_page_num']) if c_row['chant_page_num'] is not None else None,
+                            chant_book=c_row['chant_book'],
                             bbox=c_row['bbox'],
                             text_src=c_row['text_src'],
                             translation_short_code=c_row['translation_short_code'],
@@ -4709,6 +4896,10 @@ def dashboard_page():
 @app.get("/day")
 def day_page():
     return FileResponse(os.path.join(_STATIC_DIR, "day.html"))
+
+@app.get("/intake")
+def intake_page():
+    return FileResponse(os.path.join(_STATIC_DIR, "intake.html"))
 
 @app.get("/profile")
 def profile_page():

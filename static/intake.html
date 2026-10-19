@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Liturgio — Intake Queue</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="/static/auth.js"></script>
+  <link rel="stylesheet" href="/static/intake.css">
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>Liturgio — Intake Queue</h1>
+    <nav id="page-nav">
+      <a href="/">Chant Browser</a>
+      <a href="/editor">Chant Editor</a>
+      <a href="/sources">Source Review</a>
+      <a href="/assignments">Assignment Review</a>
+      <a href="/mergers">Merge Manager</a>
+      <a href="/gr-index">GR Index</a>
+      <a href="/intake" class="active">Intake</a>
+      <a href="/dashboard">Dashboard</a>
+      <a href="/day">Day View</a>
+    </nav>
+    <div id="iq-stats-badge"></div>
+  </header>
+
+  <div id="main">
+    <!-- ── Left sidebar ── -->
+    <aside id="sidebar">
+      <div id="filter-area">
+        <div class="filter-group">
+          <label class="filter-label">Status</label>
+          <div class="chips" id="iq-status-chips"></div>
+        </div>
+        <div class="filter-group iq-selects">
+          <select id="iq-book" aria-label="Book"></select>
+          <select id="iq-category" aria-label="Category"></select>
+        </div>
+      </div>
+      <div id="iq-search-area">
+        <input type="search" id="iq-search" placeholder="Search title, prompt, answer…" autocomplete="off">
+      </div>
+      <div id="iq-list-count"></div>
+      <ul id="iq-list"></ul>
+    </aside>
+
+    <!-- ── Right panel ── -->
+    <main id="iq-panel">
+      <div id="iq-empty-state">
+        <p>Select a question from the list</p>
+        <p class="iq-keys">j / k: next / previous · Ctrl+Enter in the answer: save &amp; next</p>
+      </div>
+
+      <div id="iq-detail" hidden>
+        <div id="iq-header">
+          <div id="iq-title-row">
+            <span id="iq-status-pill"></span>
+            <span id="iq-title"></span>
+          </div>
+          <div id="iq-meta"></div>
+        </div>
+
+        <div id="iq-body">
+          <!-- Pages -->
+          <section id="iq-pages">
+            <div id="iq-page-tabs"></div>
+            <div id="iq-page-toolbar">
+              <button type="button" class="btn-secondary btn-sm" id="iq-page-prev" title="Previous page in the book">◀</button>
+              <span id="iq-page-label"></span>
+              <button type="button" class="btn-secondary btn-sm" id="iq-page-next" title="Next page in the book">▶</button>
+              <span id="iq-page-offset"></span>
+              <span class="iq-spacer"></span>
+              <button type="button" class="btn-secondary btn-sm" id="iq-page-zoom">Zoom</button>
+              <a id="iq-page-open" class="btn-secondary btn-sm" target="_blank" rel="noopener">Open ↗</a>
+            </div>
+            <div id="iq-page-note"></div>
+            <div id="iq-page-wrap">
+              <img id="iq-page-img" alt="">
+              <div id="iq-page-missing" hidden>No image for this page</div>
+              <div id="iq-no-pages" hidden>This question cites no book pages</div>
+            </div>
+          </section>
+
+          <!-- Question + answer -->
+          <section id="iq-side">
+            <div class="iq-block">
+              <h3>Question</h3>
+              <div id="iq-prompt"></div>
+            </div>
+
+            <div class="iq-block" id="iq-options-block" hidden>
+              <h3>Proposed answers <span class="iq-hint">(click to add to your answer)</span></h3>
+              <div id="iq-options"></div>
+            </div>
+
+            <div class="iq-block" id="iq-chants-block" hidden>
+              <h3>Chants</h3>
+              <div id="iq-chants"></div>
+            </div>
+
+            <div class="iq-block" id="iq-refs-block" hidden>
+              <h3>Database rows</h3>
+              <ul id="iq-refs" class="iq-plain-list"></ul>
+            </div>
+
+            <div class="iq-block" id="iq-context-block" hidden>
+              <h3>Context <span class="iq-hint">(what an agent needs to act on this from scratch)</span></h3>
+              <ul id="iq-context" class="iq-plain-list"></ul>
+            </div>
+
+            <div class="iq-block" id="iq-related-block" hidden>
+              <h3>Related questions</h3>
+              <ul id="iq-related" class="iq-plain-list"></ul>
+            </div>
+
+            <div class="iq-block" id="iq-answer-block">
+              <h3>Your answer</h3>
+              <textarea id="iq-answer" rows="7" placeholder="Write the instruction an agent should carry out…"></textarea>
+              <div id="iq-answer-row">
+                <label class="iq-check"><input type="checkbox" id="iq-rule"> Standing rule (applies beyond this case)</label>
+                <span class="iq-spacer"></span>
+                <button type="button" class="btn-secondary" id="iq-btn-clear">Clear answer</button>
+                <button type="button" class="btn-secondary" id="iq-btn-save">Save</button>
+                <button type="button" class="btn-primary" id="iq-btn-next">Save &amp; next</button>
+              </div>
+              <div id="iq-answer-msg"></div>
+            </div>
+
+            <div class="iq-block" id="iq-resolution-block" hidden>
+              <h3>Execution</h3>
+              <div id="iq-resolution"></div>
+            </div>
+          </section>
+        </div>
+      </div>
+    </main>
+  </div>
+</div>
+
+<script src="https://cdn.jsdelivr.net/gh/bbloomf/exsurge@v1.24.2/dist/exsurge.min.js"></script>
+<script src="/static/chant-render.js"></script>
+<script src="/static/intake.js"></script>
+</body>
+</html>

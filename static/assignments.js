@@ -242,11 +242,13 @@ function renderChantSrcReviewPane(chantData) {
   cwChantSrcTextsrcMsg.textContent = '';
 
   const chantPageNum = chantData.chant_page_num || chantData.printed_page_num;
-  if (chantData.book && chantPageNum != null) {
-    cwChantSrcImgLabel.textContent = `${chantData.book} p.${chantPageNum}`;
+  // chant_book: a cross-book xref (lit_part_sources.ref_book) cites a page in another book.
+  const chantBook = (chantData.chant_page_num && chantData.chant_book) || chantData.book;
+  if (chantBook && chantPageNum != null) {
+    cwChantSrcImgLabel.textContent = `${chantBook} p.${chantPageNum}`;
     cwChantSrcImg.style.display = '';
     cwChantSrcImg.dataset.bbox = chantData.bbox || '';
-    cwChantSrcImg.src = `/api/books/${encodeURIComponent(chantData.book)}/${chantPageNum}/image`;
+    cwChantSrcImg.src = `/api/books/${encodeURIComponent(chantBook)}/${chantPageNum}/image`;
   } else {
     cwChantSrcImgLabel.textContent = 'No page image';
     cwChantSrcImg.removeAttribute('src');

@@ -120,6 +120,60 @@ Steps 1–3 done 2026-10-18 (#2); grants verified: SELECT/INSERT on `edit_queue`
    review show **Submit edit** instead of Save. Without the env var it answers
    503 "not enabled on this server yet". To try the prod UI locally, run the
    server with `LITURGIO_READ_ONLY=1` (submissions go to local `edit_queue`).
+5. Create the apply script's user (#5), on DO as `doadmin`, bound to the admin IP:
+   ```sql
+   CREATE USER 'liturgio_sync'@'47.188.35.218' IDENTIFIED BY '<generated>';
+   GRANT SELECT, UPDATE (status, resolved_at, note) ON liturgio.edit_queue
+     TO 'liturgio_sync'@'47.188.35.218';
+   ```
+   The `@host` makes it useless from anywhere else, including the App Platform
+   app. Keep it only in keyring `liturgio-mysql-do` / `liturgio_sync`, never as
+   an App Platform env var. Recreate it whenever the admin IP changes (see Todos).
+
+### Applying queued edits: `scripts/apply_queue.py` (#4)
+
+Run on the admin machine only:
+```
+.venv\Scripts\python.exe scripts\apply_queue.py --dry-run   # preview, writes nothing
+.venv\Scripts\python.exe scripts\apply_queue.py             # review and apply
+```
+1. Reads DO's `pending` rows (as `liturgio_sync`) in `edit_id` order and shows
+   each edit: submitter id, time, table, PK, old → new (a line diff for long
+   text such as gabc).
+2. Prompts approve / reject (optional reason) / skip / quit. Skipped rows stay
+   `pending`. Nothing is written until you confirm the totals at the end.
+3. Applies the approved edits to local `liturgio` as `jcost` in one
+   transaction, re-checking each row under `SELECT … FOR UPDATE`.
+4. Marks each row `applied` / `rejected` / `conflict` on DO (`resolved_at`,
+   `note`). The update only matches rows still `pending`.
+5. Prod keeps showing applied edits as "approved, publishing soon" until the
+   next `sync_to_do.py --execute`, which the script reminds you to run. It
+   never writes DO's real tables.
+
+Safety checks, enforced by the script and never taken from the queue row:
+- **Allowlist** (`ALLOWLIST` in the script, mirroring the API's `_QUEUE_TARGETS`):
+  `local_chants` {gabc, status, translation_source_code, is_text_exact} and
+  `lit_part_sources` {review_status, jurisdiction, option_num, original_text,
+  vernacular_text, text_src, part_id, lit_epoch_slug, wkday, bbox, notes,
+  chant_uuid}, with value types and nullability. Anything else (`app_user`,
+  `p_app_role`, other columns, a malformed PK) is marked `rejected` without
+  touching local. SQL identifiers come only from the allowlist, and values are
+  bound parameters.
+- **Optimistic concurrency:** an edit applies only if each column's local value
+  is what the submitter saw: `base_values` (always the live value), the
+  `new_values` of the same user's earlier edit to that row that was applied
+  after this one was submitted (chained edits, see #3), or `new_values` itself
+  (a no-op, so a re-run after a failed DO update recovers). Otherwise it shows
+  a three-way diff (saw / local now / proposed) and marks the edit `conflict`.
+  An edit by a different user to a column changed since submit is a conflict.
+- A DB error on one edit (e.g. an FK violation) rolls back only that edit,
+  through a savepoint, and leaves it `pending`.
+
+`--queue local --schema <name>` reads and marks `edit_queue` in a local schema
+instead of on DO. Use it for testing and for edits submitted to a local
+`LITURGIO_READ_ONLY=1` server. Tested 2026-10-19 against a scratch copy
+(`liturgio_apply_test`): approve, reject, conflict, non-allowlisted table and
+column, chained and undo edits, cross-run chaining, re-run recovery, and dry run.
 
 ## Todos
 
