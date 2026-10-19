@@ -120,7 +120,8 @@ Steps 1–3 done 2026-10-18 (#2); grants verified: SELECT/INSERT on `edit_queue`
    review show **Submit edit** instead of Save. Without the env var it answers
    503 "not enabled on this server yet". To try the prod UI locally, run the
    server with `LITURGIO_READ_ONLY=1` (submissions go to local `edit_queue`).
-5. Create the apply script's user (#5), on DO as `doadmin`, bound to the admin IP:
+5. Create the apply script's user (#5), on DO as `doadmin`, bound to the admin IP
+   (done 2026-10-19; grants verified, `apply_queue.py --dry-run` connects):
    ```sql
    CREATE USER 'liturgio_sync'@'47.188.35.218' IDENTIFIED BY '<generated>';
    GRANT SELECT, UPDATE (status, resolved_at, note) ON liturgio.edit_queue
