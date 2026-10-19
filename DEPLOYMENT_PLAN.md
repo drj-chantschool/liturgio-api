@@ -115,7 +115,11 @@ Steps 1–3 done 2026-10-18 (#2); grants verified: SELECT/INSERT on `edit_queue`
    No UPDATE/DELETE: a hijacked app or account can add rows but can't rewrite
    or erase history. Keep a copy in keyring `liturgio-mysql-do` / `liturgio_queue`.
 3. Add the App Platform env var `LITURGIO_QUEUE_DB_PASSWORD` (type `SECRET`, RUN_TIME).
-   Until #3 ships, nothing uses it.
+4. Deploy #3: `POST /api/edit_queue` (exempt from the read-only guard, needs
+   `WRITE_LEVEL`) connects as `liturgio_queue`; the chant editor and source
+   review show **Submit edit** instead of Save. Without the env var it answers
+   503 "not enabled on this server yet". To try the prod UI locally, run the
+   server with `LITURGIO_READ_ONLY=1` (submissions go to local `edit_queue`).
 
 ## Todos
 

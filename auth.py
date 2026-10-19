@@ -40,8 +40,10 @@ PUBLIC_PATHS = {
 }
 # POSTs that the prod read-only guard must let through. Login/logout write no
 # DB rows; /auth/password writes only the caller's own app_user row, as the
-# separate liturgio_auth DB user (see app.pw_writer and DEPLOYMENT_PLAN.md).
-READ_ONLY_EXEMPT = {'/auth/login', '/auth/logout', '/auth/password'}
+# separate liturgio_auth DB user (see app.pw_writer and DEPLOYMENT_PLAN.md);
+# /api/edit_queue only INSERTs into edit_queue, as liturgio_queue
+# (app.queue_writer), and still needs WRITE_LEVEL (see middleware).
+READ_ONLY_EXEMPT = {'/auth/login', '/auth/logout', '/auth/password', '/api/edit_queue'}
 # Writes any signed-in user may make on their own account, whatever their role.
 SELF_SERVICE = {'/auth/password'}
 

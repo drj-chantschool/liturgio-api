@@ -1,16 +1,20 @@
 from typing import Optional, List
 import datetime
+import json
 import os
+import threading
+import time
 import re
 import uuid
 import unicodedata
 from difflib import SequenceMatcher
 import keyring
 from sqlalchemy import bindparam, create_engine, text
+from sqlalchemy.exc import DBAPIError
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
-from pydantic import BaseModel, computed_field, model_validator
+from pydantic import BaseModel, ValidationError, computed_field, model_validator
 
 import auth
 from gabc_tools.gbchant import extract_gabc_body
@@ -35,6 +39,9 @@ _engines: dict = {}
 # credential, so rw() refuses there (see DEPLOYMENT_PLAN.md).
 _DB_HOST = os.environ.get('LITURGIO_DB_HOST')
 _PROD = bool(_DB_HOST)
+# Prod is always read-only. LITURGIO_READ_ONLY=1 makes a local server behave
+# the same way (guard on, Save → Submit edit), to test the queue path.
+_READ_ONLY = _PROD or os.environ.get('LITURGIO_READ_ONLY') == '1'
 # Session sql_mode pinned to local dev's, so DO's server default (ANSI:
 # "..." = identifier, || = concat) can't silently change query meaning.
 _SQL_MODE = ('ONLY_FULL_GROUP_BY,STRICT_TRANS_TABLES,NO_ZERO_IN_DATE,NO_ZERO_DATE,'
@@ -75,7 +82,7 @@ def ro():
     return _engine(os.environ.get('LITURGIO_DB_USER', 'liturgio_ro'))
 
 def rw():
-    if _PROD:
+    if _READ_ONLY:
         raise HTTPException(403, "This deployment is read-only")
     return _engine('jcost')
 
@@ -90,6 +97,20 @@ def pw_writer():
         raise HTTPException(503, auth.PASSWORD_CHANGE_DISABLED)
     return _engine(os.environ.get('LITURGIO_AUTH_DB_USER', 'liturgio_auth'),
                    'LITURGIO_AUTH_DB_PASSWORD')
+
+QUEUE_DISABLED = 'Edit submissions are not enabled on this server yet'
+
+def queue_writer():
+    """Engine for the review queue: liturgio_queue in prod, which can only
+    SELECT and INSERT edit_queue (no UPDATE/DELETE, no other table), so a
+    hijacked app can add proposals but never touch real data or history.
+    Locally jcost."""
+    if not _PROD:
+        return _engine('jcost')
+    if not os.environ.get('LITURGIO_QUEUE_DB_PASSWORD'):
+        raise HTTPException(503, QUEUE_DISABLED)
+    return _engine(os.environ.get('LITURGIO_QUEUE_DB_USER', 'liturgio_queue'),
+                   'LITURGIO_QUEUE_DB_PASSWORD')
 
 
 # Page images: in prod they live in DO Spaces (key derived from the books PK;
@@ -114,9 +135,26 @@ def _spaces():
 
 @app.middleware("http")
 async def _read_only_guard(request, call_next):
-    if (_PROD and request.method not in ("GET", "HEAD", "OPTIONS")
+    if (_READ_ONLY and request.method not in ("GET", "HEAD", "OPTIONS")
             and request.url.path not in auth.READ_ONLY_EXEMPT):
         return JSONResponse({"detail": "This deployment is read-only"}, status_code=403)
+    return await call_next(request)
+
+
+# Submissions carry whole GABC/text fields but nothing bigger. Checked before
+# the body is read; a body without Content-Length (chunked) is refused.
+MAX_EDIT_BYTES = 256 * 1024
+
+@app.middleware("http")
+async def _edit_size_guard(request, call_next):
+    if request.method == 'POST' and request.url.path == '/api/edit_queue':
+        try:
+            size = int(request.headers.get('content-length', ''))
+        except ValueError:
+            return JSONResponse({'detail': 'Content-Length required'}, status_code=411)
+        if size > MAX_EDIT_BYTES:
+            return JSONResponse({'detail': f'Edit too large (max {MAX_EDIT_BYTES // 1024} KB)'},
+                                status_code=413)
     return await call_next(request)
 
 
@@ -144,7 +182,8 @@ def auth_logout():
 
 @app.get("/api/me")
 def api_me(request: Request):
-    return auth.Auth.public_user(request.state.user)
+    # read_only: the UI turns Save into "Submit edit" (POST /api/edit_queue).
+    return {**auth.Auth.public_user(request.state.user), 'read_only': _READ_ONLY}
 
 
 @app.get("/api/me/profile")
@@ -1411,15 +1450,12 @@ def get_lit_part_source(text_id: int):
     return _lps_from_row(row)
 
 
-@app.patch("/api/lit_part_sources/{text_id}", response_model=LitPartSource)
-def update_lit_part_source(text_id: int, body: LitPartSourceUpdate):
+def _lps_columns(body: LitPartSourceUpdate) -> dict:
+    """The lit_part_sources columns a partial update writes: only the fields
+    actually sent, with service_part (a part_code) converted to part_id."""
     fields = body.model_dump(exclude_unset=True)
     if not fields:
         raise HTTPException(400, "No fields to update")
-
-    # review_status → column name matches directly; no transformation needed.
-
-    # Convert service_part (part_code string) → part_id (int FK) if present.
     if 'service_part' in fields:
         part_code_val = fields.pop('service_part')
         if part_code_val is None:
@@ -1435,7 +1471,12 @@ def update_lit_part_source(text_id: int, body: LitPartSourceUpdate):
         if pid is None:
             raise HTTPException(400, f"Unknown service_part code: {part_code_val!r}")
         fields['part_id'] = pid
+    return fields
 
+
+@app.patch("/api/lit_part_sources/{text_id}", response_model=LitPartSource)
+def update_lit_part_source(text_id: int, body: LitPartSourceUpdate):
+    fields = _lps_columns(body)
     set_clause = ", ".join(f"{col} = :{col}" for col in fields)
     params = dict(fields)
     params['tid'] = text_id
@@ -1458,6 +1499,194 @@ def update_lit_part_source(text_id: int, body: LitPartSourceUpdate):
     except Exception as exc:
         raise HTTPException(503, str(exc))
     return get_lit_part_source(text_id)
+
+
+# ── Review queue (prod write path, liturgio-api #1/#3) ────────────────────────
+# Prod never writes the real tables: Save becomes "Submit edit", which records
+# the proposed column values in edit_queue for the owner to review and apply
+# to local (scripts/apply_queue.py). Only the tables and columns below can be
+# queued; the apply script checks the same allowlist again.
+
+def _chant_columns(body: ChantUpdate) -> dict:
+    return {
+        'gabc': body.gabc,
+        'status': body.status,
+        'translation_source_code': body.translation_source_code,
+        'is_text_exact': int(body.is_text_exact),
+    }
+
+# table -> (PK column, PK type, request model, model -> {column: value}).
+# The request models are the direct-save bodies (PUT /api/chants/{id},
+# PATCH /api/lit_part_sources/{id}), so the UI sends the same payload either way.
+_QUEUE_TARGETS = {
+    'local_chants': ('local_chant_id', str, ChantUpdate, _chant_columns),
+    'lit_part_sources': ('text_id', int, LitPartSourceUpdate, _lps_columns),
+}
+
+# Per instance (prod runs 2), like the login throttle; the pending cap is the
+# cross-instance backstop.
+_SUBMIT_WINDOW, _SUBMIT_MAX = 10 * 60, 60
+MAX_PENDING_PER_USER = 300
+_submits: dict = {}
+_submits_lock = threading.Lock()
+
+def _submit_throttled(user_id: int) -> bool:
+    now = time.time()
+    with _submits_lock:
+        recent = [t for t in _submits.get(user_id, []) if now - t < _SUBMIT_WINDOW]
+        throttled = len(recent) >= _SUBMIT_MAX
+        if not throttled:
+            recent.append(now)
+        _submits[user_id] = recent
+        return throttled
+
+
+class EditSubmit(BaseModel):
+    target_table: str
+    target_pk: dict           # {"<pk column>": value}
+    new_values: dict          # the direct-save request body for that table
+
+
+class QueuedEdit(BaseModel):
+    edit_id: int
+    submitted_by: int
+    submitted_at: Optional[str] = None
+    target_table: str
+    target_pk: dict
+    base_values: dict
+    new_values: dict
+    status: str
+    resolved_at: Optional[str] = None
+    note: Optional[str] = None
+
+
+def _json_col(v):
+    # mysql-connector returns JSON columns as str.
+    return json.loads(v) if isinstance(v, (str, bytes)) else v
+
+
+def _queued_edit(r) -> QueuedEdit:
+    return QueuedEdit(
+        edit_id=r['edit_id'], submitted_by=r['submitted_by'],
+        submitted_at=r['submitted_at'].isoformat() if r['submitted_at'] else None,
+        target_table=r['target_table'], target_pk=_json_col(r['target_pk']),
+        base_values=_json_col(r['base_values']), new_values=_json_col(r['new_values']),
+        status=r['status'],
+        resolved_at=r['resolved_at'].isoformat() if r['resolved_at'] else None,
+        note=r['note'],
+    )
+
+
+def _queue_db_error(exc: DBAPIError):
+    # Prod with liturgio_queue missing (1045) or not yet granted (1142/1143).
+    if getattr(exc.orig, 'errno', None) in (1045, 1142, 1143):
+        raise HTTPException(503, QUEUE_DISABLED)
+    raise HTTPException(503, str(exc))
+
+
+_QUEUE_COLS = """edit_id, submitted_by, submitted_at, target_table, target_pk,
+                 base_values, new_values, status, resolved_at, note"""
+
+
+@app.post("/api/edit_queue", response_model=QueuedEdit, status_code=201)
+def submit_edit(body: EditSubmit, request: Request):
+    user = request.state.user          # the auth middleware already required WRITE_LEVEL
+    target = _QUEUE_TARGETS.get(body.target_table)
+    if not target:
+        raise HTTPException(400, f"Edits to {body.target_table!r} cannot be submitted")
+    pk_col, pk_type, model, to_columns = target
+    if set(body.target_pk) != {pk_col}:
+        raise HTTPException(400, f"target_pk must be {{{pk_col!r}: ...}}")
+    try:
+        pk_val = pk_type(body.target_pk[pk_col])
+    except (TypeError, ValueError):
+        raise HTTPException(400, f"Invalid {pk_col}")
+    try:
+        new = to_columns(model.model_validate(body.new_values))
+    except ValidationError as exc:
+        raise HTTPException(422, exc.errors(include_url=False, include_context=False))
+
+    # Column names come from the allowlisted model, never from the request.
+    cols = list(new)
+    try:
+        with ro().connect() as conn:
+            row = conn.execute(
+                text(f"SELECT {', '.join(cols)} FROM {body.target_table} WHERE {pk_col} = :pk"),
+                {'pk': pk_val},
+            ).mappings().first()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    if row is None:
+        raise HTTPException(404, "Row not found")
+
+    if _submit_throttled(user['user_id']):
+        raise HTTPException(429, 'Too many edits submitted; try again in a few minutes')
+    try:
+        with queue_writer().begin() as conn:
+            mine = conn.execute(text("""
+                SELECT target_table, target_pk, new_values FROM edit_queue
+                WHERE submitted_by = :u AND status = 'pending' ORDER BY edit_id
+            """), {'u': user['user_id']}).mappings().fetchall()
+            if len(mine) >= MAX_PENDING_PER_USER:
+                raise HTTPException(429, f'You have {len(mine)} edits awaiting review; '
+                                         'wait for some to be applied before submitting more')
+            # What this user already proposed for this row, per column (latest wins).
+            proposed = {}
+            for m in mine:
+                if m['target_table'] == body.target_table and _json_col(m['target_pk']) == {pk_col: pk_val}:
+                    proposed.update(_json_col(m['new_values']))
+            # Queue the columns that differ from what the user sees: their latest
+            # proposal, else live. So re-submitting is a no-op, and setting a
+            # column back to live undoes a proposal (applying it reverts).
+            # base_values lets the apply script spot a row changed on local
+            # since (status='conflict').
+            changed = [c for c in cols if proposed.get(c, row[c]) != new[c]]
+            if not changed:
+                raise HTTPException(400, "No changes to submit")
+            edit_id = conn.execute(text("""
+                INSERT INTO edit_queue (submitted_by, target_table, target_pk, base_values, new_values)
+                VALUES (:u, :t, :pk, :base, :new)
+            """), {
+                'u': user['user_id'], 't': body.target_table,
+                'pk': json.dumps({pk_col: pk_val}),
+                'base': json.dumps({c: row[c] for c in changed}, default=str),
+                'new': json.dumps({c: new[c] for c in changed}, default=str),
+            }).lastrowid
+            r = conn.execute(text(f"SELECT {_QUEUE_COLS} FROM edit_queue WHERE edit_id = :id"),
+                             {'id': edit_id}).mappings().first()
+    except DBAPIError as exc:
+        _queue_db_error(exc)
+    return _queued_edit(r)
+
+
+@app.get("/api/edit_queue", response_model=List[QueuedEdit])
+def list_edit_queue(request: Request, mine: bool = False, status: Optional[str] = 'pending',
+                    target_table: Optional[str] = None, limit: int = Query(500, ge=1, le=2000)):
+    """Queued edits, oldest first, so applying them in order leaves the latest
+    value. The UI overlays the caller's pending edits (?mine=1) on live data;
+    only admins may list everyone's."""
+    user = request.state.user
+    if not mine and user['role_level'] < auth.ADMIN_LEVEL:
+        raise HTTPException(403, "Only administrators can list everyone's edits")
+    where, params = [], {'lim': limit}
+    if mine:
+        where.append('submitted_by = :u')
+        params['u'] = user['user_id']
+    if status:
+        where.append('status = :s')
+        params['s'] = status
+    if target_table:
+        where.append('target_table = :t')
+        params['t'] = target_table
+    sql = (f"SELECT {_QUEUE_COLS} FROM edit_queue"
+           + (f" WHERE {' AND '.join(where)}" if where else '')
+           + " ORDER BY edit_id LIMIT :lim")
+    try:
+        with queue_writer().connect() as conn:
+            rows = conn.execute(text(sql), params).mappings().fetchall()
+    except DBAPIError as exc:
+        _queue_db_error(exc)
+    return [_queued_edit(r) for r in rows]
 
 
 # ── chant lookup by chant_uuid ────────────────────────────────────────────────

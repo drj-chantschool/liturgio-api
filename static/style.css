@@ -326,6 +326,17 @@ select:focus { border-color: var(--accent-lt); }
 #save-status.saved   { color: #5a9a50; font-style: normal; }
 #save-status.unsaved { color: #c8a05a; font-style: normal; }
 #save-status.error   { color: #c85a5a; font-style: normal; }
+#save-status.pending { color: #5a90c8; font-style: normal; }
+
+/* A proposed edit queued for review on the read-only server (edit-queue.js). */
+.pending-badge {
+  font-size: 0.6rem;
+  flex-shrink: 0;
+  padding: 0 0.3rem;
+  border: 1px solid #5a90c8;
+  border-radius: 3px;
+  color: #5a90c8;
+}
 
 /* ── Edit / Preview area ───────────────────────────────────────────── */
 #edit-area {

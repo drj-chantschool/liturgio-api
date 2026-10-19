@@ -8,6 +8,8 @@ const state = {
   parts: [],            // service_part reference
   filters: { book: '', status: 'draft', q: '' },
   bboxFilter: null,     // Set of text_ids when filtering by shared bbox; null = off
+  readOnly: false,      // prod: Save/Approve/Reject submit to the review queue (edit-queue.js)
+  pending: new Map(),   // String(text_id) -> this user's pending column values
 };
 
 const $ = id => document.getElementById(id);
@@ -67,6 +69,37 @@ async function api(path, opts) {
   return res.status === 204 ? null : res.json();
 }
 
+// The source with this user's pending edits laid over it. Queued values are
+// columns, so part_id maps back to the service_part code the UI shows.
+function withPending(s) {
+  const p = state.pending.get(String(s.text_id));
+  if (!p) return s;
+  const out = { ...s, ...p, pending: true };
+  delete out.part_id;
+  if ('part_id' in p) {
+    const part = state.parts.find(x => x.part_id === p.part_id);
+    if (part) {
+      out.service_part = part.part_code;
+      out.part_display_name = part.display_name;
+    }
+  }
+  return out;
+}
+
+// Write a PATCH-shaped payload: directly, or to the review queue on prod.
+async function saveSource(textId, payload) {
+  if (!state.readOnly) {
+    return api(`/api/lit_part_sources/${textId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+  }
+  editQueue.record(state.pending, await editQueue.submit('lit_part_sources', { text_id: textId }, payload));
+  const current = state.sources.find(x => x.text_id === textId) || state.selected;
+  return withPending(current);
+}
+
 // ── List ─────────────────────────────────────────────────────────────────────
 async function loadList() {
   const p = new URLSearchParams();
@@ -78,7 +111,7 @@ async function loadList() {
   if (!state.filters.book)  p.set('provenanced', 'true');
   state.bboxFilter = null;
   try {
-    state.sources = await api('/api/lit_part_sources?' + p.toString());
+    state.sources = (await api('/api/lit_part_sources?' + p.toString())).map(withPending);
   } catch (e) {
     srcList.innerHTML = `<li class="src-error">Error: ${e.message}</li>`;
     return;
@@ -121,7 +154,8 @@ function renderList() {
     li.innerHTML =
       `<span class="src-part part-${s.service_part}">${escapeHtml(partLabel)}</span>` +
       `<span class="src-incipit">${escapeHtml(incipit)}</span>` +
-      `<span class="src-status status-${s.review_status}">${s.review_status}</span>`;
+      `<span class="src-status status-${s.review_status}">${s.review_status}</span>` +
+      (s.pending ? `<span class="pending-badge" title="Your edit is pending review">pending</span>` : '');
     li.addEventListener('click', () => selectSource(s.text_id));
     srcList.appendChild(li);
   }
@@ -164,7 +198,7 @@ function selectSource(textId) {
 
   emptyState.hidden = true;
   editor.hidden = false;
-  seMsg.textContent = '';
+  seMsg.textContent = s.pending ? '● Your edit is pending review' : '';
 
   srcTitle.textContent = `#${s.text_id} · ${s.service_part.toUpperCase()}`;
   srcMeta.textContent = [s.epoch_title, s.book]
@@ -411,19 +445,15 @@ async function save(newStatus) {
   if (!state.selected) return;
   if (newStatus) seStatus.value = newStatus;
   const payload = buildPayload();
-  seMsg.textContent = 'Saving…';
+  seMsg.textContent = state.readOnly ? 'Submitting…' : 'Saving…';
   try {
-    const updated = await api(`/api/lit_part_sources/${state.selected.text_id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
+    const updated = await saveSource(state.selected.text_id, payload);
     // update local copy in list
     const idx = state.sources.findIndex(x => x.text_id === updated.text_id);
     if (idx !== -1) state.sources[idx] = updated;
     state.selected = updated;
     state.original = { ...updated };
-    seMsg.textContent = '✓ Saved';
+    seMsg.textContent = state.readOnly ? '✓ Submitted for review' : '✓ Saved';
     renderList();
     renderStats();
     srcMeta.textContent = [updated.epoch_title, updated.book]
@@ -518,16 +548,16 @@ const browser = createGregobaseBrowser({
   api,
   onAssign: async gregobaseId => {
     if (!state.selected) throw new Error('No source selected');
-    const updated = await api(`/api/lit_part_sources/${state.selected.text_id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ chant_uuid: `gregobase:${gregobaseId}` }),
-    });
+    const updated = await saveSource(state.selected.text_id,
+                                     { chant_uuid: `gregobase:${gregobaseId}` });
     const idx = state.sources.findIndex(x => x.text_id === updated.text_id);
     if (idx !== -1) state.sources[idx] = updated;
     state.selected = updated;
     state.original = { ...updated };
-    seMsg.textContent = `✓ Assigned gregobase:${gregobaseId}`;
+    seMsg.textContent = state.readOnly
+      ? `✓ Submitted gregobase:${gregobaseId} for review`
+      : `✓ Assigned gregobase:${gregobaseId}`;
+    renderList();
     loadChantEngraving(updated);
   },
 });
@@ -563,10 +593,23 @@ seNewBtn.addEventListener('click', () => {
   newChant.open({ incipit: (state.selected?.original_text || '').slice(0, 60) });
 });
 
+async function loadEditMode() {
+  state.readOnly = await editQueue.readOnly();
+  if (!state.readOnly) return;
+  const hint = 'This server is read-only: your edit is queued for review';
+  seApprove.textContent = '✓ Submit approval';
+  seReject.textContent = '✗ Submit rejection';
+  seSave.textContent = 'Submit edit';
+  for (const b of [seApprove, seReject, seSave]) b.title = hint;
+  // Creating a local chant inserts rows, which the queue can't propose.
+  seNewBtn.hidden = true;
+  state.pending = await editQueue.pending('lit_part_sources');
+}
+
 // ── Init ─────────────────────────────────────────────────────────────────────
 (async function init() {
   buildHandles();
-  await Promise.all([loadParts(), browser.init(), loadBooks()]);
+  await Promise.all([loadParts(), browser.init(), loadBooks(), loadEditMode()]);
   await loadList();
 
   // Select a source via URL hash (e.g. /sources#123) — used by assignment review links
@@ -578,7 +621,7 @@ seNewBtn.addEventListener('click', () => {
     } else {
       // Source may not be in the current filter — fetch it directly
       try {
-        const src = await api(`/api/lit_part_sources/${hashId}`);
+        const src = withPending(await api(`/api/lit_part_sources/${hashId}`));
         state.sources = [src, ...state.sources];
         renderList();
         renderStats();

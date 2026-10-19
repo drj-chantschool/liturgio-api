@@ -7,6 +7,8 @@ const state = {
   original: null,    // snapshot for revert
   dirty: false,
   filters: { q: '', part: '', status: '' },
+  readOnly: false,   // prod: Save submits to the review queue (edit-queue.js)
+  pending: new Map(),// local_chant_id -> this user's pending column values
 };
 
 // ── DOM refs ──────────────────────────────────────────────────────────────────
@@ -75,6 +77,16 @@ async function apiFetch(url, opts = {}) {
   return res.json();
 }
 
+// The chant (list item or detail) with this user's pending edits laid over it.
+function withPending(c) {
+  const p = state.pending.get(c.local_chant_id);
+  if (!p) return c;
+  const out = { ...c, pending: true };
+  for (const k of ['gabc', 'status', 'translation_source_code']) if (k in p) out[k] = p[k];
+  if ('is_text_exact' in p) out.is_text_exact = !!p.is_text_exact;
+  return out;
+}
+
 // ── Load / filter list ────────────────────────────────────────────────────────
 async function loadChants() {
   const p = new URLSearchParams({ limit: '500' });
@@ -132,7 +144,7 @@ async function selectChant(id) {
   );
 
   try {
-    const chant = await apiFetch(`/api/chants/${id}`);
+    const chant = withPending(await apiFetch(`/api/chants/${id}`));
     state.selected = chant;
     state.original = structuredClone(chant);
     state.dirty = false;
@@ -150,7 +162,8 @@ function renderList() {
 
   const selectedId = state.selected?.local_chant_id;
 
-  for (const c of items) {
+  for (const item of items) {
+    const c = withPending(item);
     const li = document.createElement('li');
     li.className = 'chant-item' + (c.local_chant_id === selectedId ? ' active' : '');
     li.dataset.id = c.local_chant_id;
@@ -164,6 +177,7 @@ function renderList() {
         `<span class="item-part ${escHtml(partCode)}">${partName}</span>` +
         `<span class="item-status ${escHtml(c.status || '')}">${escHtml(c.status || '')}</span>` +
         (c.mode ? `<span>${escHtml(c.mode)}</span>` : '') +
+        (c.pending ? `<span class="pending-badge">pending review</span>` : '') +
       `</div>`;
 
     li.addEventListener('click', () => selectChant(c.local_chant_id));
@@ -201,7 +215,8 @@ function renderEditor() {
   exactCheck.checked  = !!c.is_text_exact;
   gabcTextarea.value  = c.gabc || '';
 
-  setSaveStatus('', '');
+  if (c.pending) setSaveStatus('● Your edit is pending review', 'pending');
+  else setSaveStatus('', '');
 
   renderGabc(c.gabc || '', previewContainer);
   renderAssignments(c.assignments || []);
@@ -552,7 +567,7 @@ function setSaveStatus(msg, cls) {
 async function saveChant() {
   if (!state.selected) return;
   saveBtn.disabled = true;
-  setSaveStatus('Saving…', '');
+  setSaveStatus(state.readOnly ? 'Submitting…' : 'Saving…', '');
 
   const body = {
     gabc: gabcTextarea.value,
@@ -560,6 +575,23 @@ async function saveChant() {
     translation_source_code: sourceSelect.value || null,
     is_text_exact: exactCheck.checked,
   };
+
+  if (state.readOnly) {
+    try {
+      const id = state.selected.local_chant_id;
+      editQueue.record(state.pending, await editQueue.submit('local_chants', { local_chant_id: id }, body));
+      state.selected = withPending(state.selected);
+      state.original = structuredClone(state.selected);
+      state.dirty = false;
+      setSaveStatus('✓ Submitted for review', 'saved');
+      renderList();
+    } catch (err) {
+      setSaveStatus(`✗ ${err.message}`, 'error');
+    } finally {
+      saveBtn.disabled = false;
+    }
+    return;
+  }
 
   try {
     const updated = await apiFetch(`/api/chants/${state.selected.local_chant_id}`, {
@@ -663,7 +695,16 @@ window.addEventListener('resize', () => {
 });
 
 // ── Init ──────────────────────────────────────────────────────────────────────
-Promise.all([loadChants(), loadStats(), loadTranslationSources()]).then(() => {
+async function loadEditMode() {
+  state.readOnly = await editQueue.readOnly();
+  if (!state.readOnly) return;
+  saveBtn.textContent = 'Submit edit';
+  saveBtn.title = 'This server is read-only: your edit is queued for review';
+  state.pending = await editQueue.pending('local_chants');
+}
+
+Promise.all([loadChants(), loadStats(), loadTranslationSources(), loadEditMode()]).then(() => {
+  renderList();
   const hashId = window.location.hash.slice(1);
   if (hashId) selectChant(hashId);
 });
