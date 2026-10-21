@@ -125,27 +125,35 @@
   font-family: 'Courier New', monospace;
 }
 
-#formulary-tabs {
+/* ── Service tabs (one per service: I Vespers … Compline) ──────────────── */
+#service-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.2rem;
   padding: 0.6rem 1.5rem 0;
-  gap: 0.4rem;
+  border-bottom: 1px solid var(--border);
 }
 
-.formulary-tab {
-  padding: 0.28rem 0.7rem;
+.service-tab {
+  padding: 0.35rem 0.85rem;
+  margin-bottom: -1px;
   background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 4px;
+  border: 1px solid transparent;
+  border-radius: 5px 5px 0 0;
   color: var(--text-muted);
-  font-size: 0.78rem;
+  font-size: 0.82rem;
   font-family: inherit;
+  white-space: nowrap;
   cursor: pointer;
-  transition: all 0.12s;
+  transition: color 0.12s, background 0.12s;
 }
-.formulary-tab:hover { border-color: var(--accent); color: var(--accent); }
-.formulary-tab.active {
-  background: var(--accent-lt);
-  border-color: var(--accent-lt);
-  color: #1a1815;
+.service-tab:hover { color: var(--accent); }
+.service-tab.active {
+  background: var(--bg);
+  border-color: var(--border);
+  border-bottom-color: var(--bg);
+  color: var(--text);
+  cursor: default;
 }
 
 #service-groups {

@@ -29,6 +29,7 @@ const state = {
   jurisdiction: 'US',
   dayData: null,             // last successful /api/day response
   activeSlug: null,
+  activeService: null,       // { code, title } of the last service tab picked, kept across days
 };
 
 const _chantCache = new Map(); // chant_uuid -> ChantUuidResult
@@ -45,7 +46,7 @@ const emptyEl         = $('day-empty');
 const panelEl         = $('observance-panel');
 const obsTitleEl      = $('observance-title');
 const obsMetaEl       = $('observance-meta');
-const formularyTabsEl = $('formulary-tabs');
+const serviceTabsEl   = $('service-tabs');
 const serviceGroupsEl = $('service-groups');
 
 // ── API helper ───────────────────────────────────────────────────────────────
@@ -141,10 +142,13 @@ function renderTabs(observances) {
 }
 
 const SERVICE_LABELS = {
-  MASS: 'Mass', VESPERS: 'Vespers', VIGIL: 'Vigil', ASHES: 'Distribution of Ashes',
-  PALMS: 'Blessing and Procession of Palms', CANDLES: 'Blessing of Candles',
-  GOODFRIDAY: 'Good Friday Liturgy', LOTIO: 'Washing of Feet',
+  VESPERS1: 'I Vespers', VIGIL: 'Vigil', INVITATORY: 'Invitatory', OFFREAD: 'Matins',
+  VIGILS: 'Vigil Office', LAUDS: 'Lauds', TERCE: 'Terce', MASS: 'Mass', SEXT: 'Sext',
+  MIDDAY: 'Hor. Med.', NONE: 'None', VESPERS: 'Vespers', COMPLINE: 'Compline',
+  ASHES: 'Distribution of Ashes', PALMS: 'Blessing and Procession of Palms',
+  CANDLES: 'Blessing of Candles', GOODFRIDAY: 'Good Friday Liturgy', LOTIO: 'Washing of Feet',
 };
+function serviceLabel(code) { return SERVICE_LABELS[code] || code; }
 
 function renderObservance(obs) {
   panelEl.hidden = false;
@@ -157,64 +161,82 @@ function renderObservance(obs) {
   metaBits.push(obs.epoch_slug);
   obsMetaEl.textContent = metaBits.filter(Boolean).join('  ·  ');
 
-  formularyTabsEl.innerHTML = '';
+  serviceTabsEl.innerHTML = '';
   serviceGroupsEl.innerHTML = '';
 
-  const formularies = obs.formularies.filter(f => Object.keys(f.services).length);
-  if (!formularies.length) {
-    formularyTabsEl.hidden = true;
+  // One tab per service, already in liturgical order (or the day's sub-epoch
+  // order) from the API; subservices such as ASHES come inside their parent.
+  const tabs = (obs.tabs || []).map(t => {
+    const formulary = obs.formularies[t.formulary];
+    return { code: t.service_code, formulary, title: '' };
+  });
+  if (!tabs.length) {
+    serviceTabsEl.hidden = true;
     serviceGroupsEl.innerHTML = '<p class="day-empty-state">No chants loaded yet for this observance.</p>';
     return;
   }
-
-  // Sub-tabs appear only when the observance actually has more than one
-  // formulary (e.g. Christmas: Vigil / Night / Dawn / Day Masses) — the
-  // ordinary single-Mass case renders straight into the content pane.
-  if (formularies.length === 1) {
-    formularyTabsEl.hidden = true;
-    renderFormularyServices(formularies[0]);
-    return;
+  const hasVespers1 = tabs.some(t => t.code === 'VESPERS1');
+  for (const t of tabs) {
+    let name = serviceLabel(t.code);
+    if (t.code === 'VESPERS' && hasVespers1) name = 'II Vespers';
+    // A sub-epoch (e.g. Christmas "Mass at Night") is named by its own title.
+    const f = t.formulary;
+    if (f.sub_epoch && f.title) {
+      name = Object.keys(f.services).length > 1 ? `${f.title} · ${name}` : f.title;
+    }
+    t.title = name;
   }
 
-  formularyTabsEl.hidden = false;
-  const selectFormulary = (formulary) => {
-    formularyTabsEl.querySelectorAll('.formulary-tab').forEach(b =>
-      b.classList.toggle('active', b.dataset.slug === formulary.epoch_slug));
-    renderFormularyServices(formulary);
-  };
-  for (const formulary of formularies) {
+  serviceTabsEl.hidden = false;
+  const buttons = tabs.map(t => {
     const btn = document.createElement('button');
-    btn.className = 'chip formulary-tab';
-    btn.dataset.slug = formulary.epoch_slug;
-    btn.textContent = formulary.title || formulary.epoch_slug;
-    btn.addEventListener('click', () => selectFormulary(formulary));
-    formularyTabsEl.appendChild(btn);
-  }
-  selectFormulary(formularies[0]);
+    btn.type = 'button';
+    btn.className = 'service-tab';
+    btn.textContent = t.title;
+    btn.addEventListener('click', () => select(t));
+    serviceTabsEl.appendChild(btn);
+    return btn;
+  });
+  const select = (t) => {
+    state.activeService = { code: t.code, title: t.title };
+    buttons.forEach((b, i) => b.classList.toggle('active', tabs[i] === t));
+    renderService(t.formulary, t.code);
+  };
+  // Stay on the same service when moving between days and observances.
+  const prev = state.activeService;
+  select((prev && (tabs.find(t => t.code === prev.code && t.title === prev.title)
+                   || tabs.find(t => t.code === prev.code))) || tabs[0]);
 }
 
-function renderFormularyServices(formulary) {
+function renderService(formulary, code) {
   serviceGroupsEl.innerHTML = '';
-  for (const code of Object.keys(formulary.services)) {
-    const group = document.createElement('section');
-    group.className = 'service-group';
-    const heading = document.createElement('div');
-    heading.className = 'service-group-header';
-    heading.textContent = SERVICE_LABELS[code] || code;
-    group.appendChild(heading);
-
-    // The API returns one entry per (part, chant_group), each listing every
-    // source that assigns it; collapse them into one block per part.
-    const byPart = new Map();
-    for (const part of formulary.services[code]) {
-      if (!byPart.has(part.part_code)) byPart.set(part.part_code, []);
-      byPart.get(part.part_code).push(part);
-    }
-    for (const options of byPart.values()) {
-      group.appendChild(renderPartRow(options));
-    }
+  // The API returns one entry per (part, chant_group), each listing every
+  // source that assigns it; collapse them into one block per part. A
+  // subservice's parts (e.g. ASHES within the Mass) get their own heading.
+  let group = null, groupCode = code, byPart = null;
+  const flush = () => {
+    if (!byPart) return;
+    for (const options of byPart.values()) group.appendChild(renderPartRow(options));
     serviceGroupsEl.appendChild(group);
+  };
+  for (const part of formulary.services[code] || []) {
+    if (!byPart || part.service_code !== groupCode) {
+      flush();
+      group = document.createElement('section');
+      group.className = 'service-group';
+      groupCode = part.service_code;
+      if (groupCode !== code) {
+        const heading = document.createElement('div');
+        heading.className = 'service-group-header';
+        heading.textContent = serviceLabel(groupCode);
+        group.appendChild(heading);
+      }
+      byPart = new Map();
+    }
+    if (!byPart.has(part.part_code)) byPart.set(part.part_code, []);
+    byPart.get(part.part_code).push(part);
   }
+  flush();
 }
 
 // chant_group.canonical_name reads "Dilexisti (in. mode 8) - 629"; the tab

@@ -786,13 +786,22 @@ class DayPartAssignment(BaseModel):
 
 
 class DayFormulary(BaseModel):
-    # A day can have more than one Mass formulary hanging off it as `kind='mass'`
-    # children in lit_epoch_tree (e.g. Christmas: Vigil / Night / Dawn / Day).
+    # A day can split its services into sub-epochs: children in lit_epoch_tree
+    # (e.g. Christmas: Vigil / Night / Dawn / Day Masses, and each Hour).
     # `title` is None for the common case of a single, unnamed formulary — the
     # observance's own title already says everything the UI needs to show.
+    # `services` is in tab order, each subservice (e.g. ASHES) folded into its
+    # parent service's parts (issue #10).
     epoch_slug: str
     title: Optional[str] = None
+    sub_epoch: bool = False
     services: dict[str, List[DayPartAssignment]]
+
+
+class DayServiceTab(BaseModel):
+    # One Day view tab: a service of one formulary (index into `formularies`).
+    formulary: int
+    service_code: str
 
 
 class DayObservance(BaseModel):
@@ -810,6 +819,7 @@ class DayObservance(BaseModel):
     effective_rank_code: Optional[str] = None
     common_of: Optional[str] = None
     formularies: List[DayFormulary]
+    tabs: List[DayServiceTab] = []
 
 
 class DayResponse(BaseModel):
@@ -1158,53 +1168,168 @@ def _group_by_chant(rows: list) -> dict:
     return services
 
 
-def _child_mass_epochs(conn, epoch_slug: str) -> list:
-    """Return [{'slug', 'title'}, ...] for kind='mass' children of epoch_slug.
+# Day view tab order (issue #10). A day split into sub-epochs takes their
+# lit_epoch.sort_order instead. Codes not listed (other rites of the day,
+# e.g. GOODFRIDAY) sort just after the Mass.
+_SERVICE_ORDER = {
+    'VESPERS1':   1,    # solemnities only
+    'VIGIL':      2,    # vigil Mass (certain solemnities)
+    'INVITATORY': 3,
+    'OFFREAD':    4,    # Matins (Office of Readings)
+    'VIGILS':     5,    # vigil office (certain solemnities)
+    'LAUDS':      6,
+    'TERCE':      7,
+    'MASS':       8,
+    'SEXT':       9,
+    'MIDDAY':     10,   # hora media: one set of propers for Terce, Sext and None
+    'NONE':       11,
+    'VESPERS':    12,   # II Vespers when the day has I Vespers
+    'COMPLINE':   13,
+}
+_UNLISTED_SERVICE_ORDER = 8.5
 
-    A day can print more than one Mass formulary (e.g. Christmas: Vigil /
-    Night / Dawn / Day Masses), each modeled as its own lit_epoch_tree child
-    of kind='mass' rather than as direct lit_part_sources rows on the day
-    itself — those rows hang off the child slugs instead.
+
+def _service_rank(code: str) -> float:
+    return _SERVICE_ORDER.get(code, _UNLISTED_SERVICE_ORDER)
+
+
+# Subservices get no tab of their own: their parts go inside the parent service.
+# service_part.subservice_part_fk marks the parent's placeholder part; these are
+# the fallback when it can't be read: (parent, part the subservice comes before).
+_SUBSERVICE_FALLBACK = {
+    'PALMS':   ('MASS', 'in'),
+    'CANDLES': ('MASS', 'in'),
+    'ASHES':   ('MASS', 'of'),   # after the homily
+    'LOTIO':   ('MASS', 'of'),
+}
+
+_subservice_cache: Optional[dict] = None
+
+
+def _subservices(conn) -> dict:
+    """{subservice_code: (parent_service_code, display_order to sit at)}, read
+    once per process from service_part."""
+    global _subservice_cache
+    if _subservice_cache is None:
+        _subservice_cache = _load_subservices(conn)
+    return _subservice_cache
+
+
+def _load_subservices(conn) -> dict:
+    catalog = {(r[0], r[1]): r[2] for r in conn.execute(text(
+        "SELECT service_code, part_code, display_order FROM service_part")).fetchall()}
+    found = {}
+    try:
+        fk = conn.execute(text("""
+            SELECT COLUMN_NAME, REFERENCED_COLUMN_NAME
+            FROM information_schema.KEY_COLUMN_USAGE
+            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = 'service_part'
+              AND CONSTRAINT_NAME = 'subservice_part_fk'
+        """)).fetchall()
+        if len(fk) == 1 and fk[0][1] == 'service_code' and re.fullmatch(r'\w+', fk[0][0]):
+            col = fk[0][0]
+            for code, order, sub in conn.execute(text(
+                    f"SELECT service_code, display_order, `{col}` FROM service_part "
+                    f"WHERE `{col}` IS NOT NULL")).fetchall():
+                if code in _SERVICE_ORDER and sub not in _SERVICE_ORDER:
+                    found[sub] = (code, order)      # placeholder part in the parent
+                elif sub in _SERVICE_ORDER and code not in _SERVICE_ORDER:
+                    found.setdefault(code, (sub, None))  # subservice row naming its parent
+    except Exception:
+        pass   # fall back to the static placement below
+    for sub, (parent, before) in _SUBSERVICE_FALLBACK.items():
+        if found.get(sub, (None, None))[1] is None:
+            order = catalog.get((parent, before))
+            found[sub] = (parent, order - 0.5 if order is not None else None)
+    return found
+
+
+def _order_services(services: dict, subservices: dict) -> dict:
+    """Fold each subservice's parts into its parent service at its placeholder
+    (the end, if unknown) and put the services in tab order."""
+    keyed: dict = {}
+    for code, parts in services.items():
+        if code in subservices:
+            parent, at = subservices[code]
+            pos = at if at is not None else float('inf')
+            keyed.setdefault(parent, []).extend(
+                ((pos, 1, p.display_order, p.part_code), p) for p in parts)
+        else:
+            keyed.setdefault(code, []).extend(
+                ((p.display_order, 0, 0, p.part_code), p) for p in parts)
+    return {code: [p for _, p in sorted(keyed[code], key=lambda kp: kp[0])]
+            for code in sorted(keyed, key=_service_rank)}
+
+
+# Children of these kinds are containers or separate observances, never a
+# division of the day's services.
+_NON_SUB_EPOCH_KINDS = ('season', 'subseason', 'week', 'day', 'saint',
+                        'common', 'ritual', 'calendar')
+
+
+def _sub_epochs(conn, epoch_slug: str) -> list:
+    """Return [{'slug', 'title'}, ...] for the sub-epochs of epoch_slug.
+
+    A day with special celebrations splits its services explicitly into
+    lit_epoch_tree children with their own sort_order (e.g. Christmas: Vigil /
+    Night / Dawn / Day Masses as kind='mass', and each Hour), rather than
+    hanging the rows on the day itself.
     """
-    rows = conn.execute(text("""
+    kinds = ', '.join(f"'{k}'" for k in _NON_SUB_EPOCH_KINDS)
+    rows = conn.execute(text(f"""
         SELECT et.child_slug AS slug, le.title
         FROM lit_epoch_tree et
         JOIN lit_epoch le ON le.slug = et.child_slug
-        WHERE et.parent_slug = :slug AND le.kind = 'mass'
-        ORDER BY le.seq, le.sort_order, le.slug
+        WHERE et.parent_slug = :slug AND le.kind NOT IN ({kinds})
+        ORDER BY le.sort_order IS NULL, le.sort_order, le.seq, le.slug
     """), {'slug': epoch_slug}).mappings().fetchall()
     return [{'slug': r['slug'], 'title': r['title']} for r in rows]
 
 
-def _formularies_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) -> List[DayFormulary]:
-    """Build the list of Mass (etc.) formularies for one observance.
+def _own_services(services: dict, slug: str) -> dict:
+    """Services with at least one part hung on `slug` itself: a sub-epoch's
+    chain runs through the day, so the rest are the day's, not its own."""
+    return {code: parts for code, parts in services.items()
+            if any(s.lit_epoch_slug == slug for p in parts for s in p.sources)}
+
+
+def _formularies_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict):
+    """Build the formularies and service tabs for one observance.
 
     Most days have exactly one, unnamed formulary carrying the direct
-    assignments on the observance's own slug. Days with kind='mass' children
-    (multiple Masses for one day) get one named formulary per child instead;
-    the direct assignments on the day slug itself are prepended too, in the
-    rare case a day carries both.
+    assignments on the observance's own slug, one tab per service in
+    _SERVICE_ORDER. Days split into sub-epochs get one named formulary per
+    child, tabbed in the children's sort_order; any service the day still
+    carries directly (and no child does) is kept too, and then all tabs go in
+    service order.
     """
+    subservices = _subservices(conn)
     direct_services = _day_parts_for_epoch(conn, jurisdiction, epoch_slug, ctx)
-    children = _child_mass_epochs(conn, epoch_slug)
-
-    if not children:
-        return [DayFormulary(epoch_slug=epoch_slug, title=None, services=direct_services)]
+    children = _sub_epochs(conn, epoch_slug)
 
     formularies = []
-    if direct_services:
-        formularies.append(DayFormulary(epoch_slug=epoch_slug, title=None, services=direct_services))
     for child in children:
-        child_services = _day_parts_for_epoch(conn, jurisdiction, child['slug'], ctx)
+        child_services = _own_services(
+            _day_parts_for_epoch(conn, jurisdiction, child['slug'], ctx), child['slug'])
         if child_services:
             formularies.append(DayFormulary(
-                epoch_slug=child['slug'], title=child['title'], services=child_services,
+                epoch_slug=child['slug'], title=child['title'], sub_epoch=True,
+                services=_order_services(child_services, subservices),
             ))
-    if not formularies:
-        # Children exist but none resolved any parts (e.g. data not loaded yet) —
-        # fall back to a single empty formulary so the UI has something to show.
-        formularies.append(DayFormulary(epoch_slug=epoch_slug, title=None, services={}))
-    return formularies
+    covered = {code for f in formularies for code in f.services}
+    direct_services = _order_services(direct_services, subservices)
+    direct_services = {c: p for c, p in direct_services.items() if c not in covered}
+    if direct_services or not formularies:
+        # (Sub-epochs exist but none resolved any parts, e.g. data not loaded
+        # yet: still a single, possibly empty, formulary for the UI to show.)
+        formularies.insert(0, DayFormulary(epoch_slug=epoch_slug, title=None,
+                                           services=direct_services))
+
+    tabs = [DayServiceTab(formulary=i, service_code=code)
+            for i, f in enumerate(formularies) for code in f.services]
+    if len(formularies) > 1 and not formularies[0].sub_epoch:
+        tabs.sort(key=lambda t: _service_rank(t.service_code))   # stable: children keep sort_order
+    return formularies, tabs
 
 
 @app.get("/api/day/{date}", response_model=DayResponse)
@@ -1362,7 +1487,7 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                 eff_rank = obs['rank_code'] if own_sort < _UNDETERMINED_SORT else day_rank
                 fill_from_season = not outranked or day_rank in _OPTIONAL_DAY_RANKS
                 obs['effective_rank_code'] = eff_rank
-                obs['formularies'] = _formularies_for_epoch(
+                obs['formularies'], obs['tabs'] = _formularies_for_epoch(
                     conn, jurisdiction, obs['epoch_slug'], {
                         **ctx,
                         'rank_code': eff_rank,
