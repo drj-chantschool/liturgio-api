@@ -277,6 +277,13 @@
   font-style: italic;
   border-top: 1px solid #ede5d8;
 }
+.part-source + .part-source { margin-top: 0.15rem; }
+.part-source-authority {
+  font-style: normal;
+  font-family: 'Courier New', monospace;
+  font-size: 0.68rem;
+  color: var(--text);
+}
 
 /* ── Right-click "Edit chant" menu (local chants only) ────────────────────── */
 #chant-context-menu {

@@ -203,8 +203,8 @@ function renderFormularyServices(formulary) {
     heading.textContent = SERVICE_LABELS[code] || code;
     group.appendChild(heading);
 
-    // The API returns one entry per printed option (option_num 1, 2 "Vel ad
-    // libitum", ...); collapse them into one block per part.
+    // The API returns one entry per (part, chant_group), each listing every
+    // source that assigns it; collapse them into one block per part.
     const byPart = new Map();
     for (const part of formulary.services[code]) {
       if (!byPart.has(part.part_code)) byPart.set(part.part_code, []);
@@ -217,9 +217,40 @@ function renderFormularyServices(formulary) {
   }
 }
 
-function optionTabLabel(opt) {
-  const rubric = (opt.option_txt || '').replace(/\s*:\s*$/, '').trim();
-  return rubric ? `Option ${opt.option_num} · ${rubric}` : `Option ${opt.option_num}`;
+// chant_group.canonical_name reads "Dilexisti (in. mode 8) - 629"; the tab
+// only needs the incipit.
+function chantTabLabel(opt) {
+  const name = (opt.chant_name || '').replace(/\s+-\s+\d+\s*$/, '').replace(/\s*\(.*$/, '').trim();
+  if (name) return name;
+  const who = [...new Set((opt.sources || []).map(s => s.assignment_authority_code).filter(Boolean))];
+  return `${who.join(', ') || 'Text'} · text only`;
+}
+
+function sourceAuthorities(opt) {
+  const codes = (opt.sources || []).map(s => s.assignment_authority_code).filter(Boolean);
+  return [...new Set(codes)].join(' · ');
+}
+
+// What each source says about this chant: its option number, printed rubric
+// and notes, and the epoch its assignment hangs on.
+function renderSources(opt, pane) {
+  const sources = opt.sources?.length ? opt.sources : [opt];
+  const list = document.createElement('div');
+  list.className = 'part-notes part-sources';
+  for (const s of sources) {
+    const line = document.createElement('div');
+    line.className = 'part-source';
+    const rubric = (s.option_txt || '').replace(/\s*:\s*$/, '').trim();
+    const bits = [`Option ${s.option_num}`];
+    if (rubric) bits.push(rubric);
+    if (s.notes && s.notes !== s.option_txt && s.notes !== rubric) bits.push(s.notes);
+    bits.push(s.lit_epoch_slug || 'psalter');
+    line.innerHTML =
+      `<span class="part-source-authority" title="${escHtml(s.authority_name || '')}">` +
+      `${escHtml(s.assignment_authority_code || '—')}</span> ` + escHtml(bits.join(' · '));
+    list.appendChild(line);
+  }
+  pane.appendChild(list);
 }
 
 function renderPartRow(options) {
@@ -260,7 +291,7 @@ function renderPartRow(options) {
     tabsEl?.querySelectorAll('.part-option-tab').forEach((b, i) =>
       b.classList.toggle('active', i === idx));
     const p = panes[idx];
-    authorityEl.textContent = p.opt.assignment_authority_code || '';
+    authorityEl.textContent = sourceAuthorities(p.opt) || p.opt.assignment_authority_code || '';
     if (!p.rendered) {
       p.rendered = true;
       renderOptionPane(p.opt, p.pane);
@@ -272,7 +303,9 @@ function renderPartRow(options) {
       const btn = document.createElement('button');
       btn.type = 'button';
       btn.className = 'part-option-tab';
-      btn.textContent = optionTabLabel(opt);
+      btn.textContent = chantTabLabel(opt);
+      btn.title = (opt.sources || []).map(s =>
+        [s.assignment_authority_code, `option ${s.option_num}`, s.option_txt].filter(Boolean).join(' · ')).join('\n');
       btn.addEventListener('click', () => show(i));
       tabsEl.appendChild(btn);
     });
@@ -297,12 +330,7 @@ function renderOptionPane(part, pane) {
     notationCol.querySelector('.part-notation-body'),
   );
 
-  if (part.notes) {
-    const notes = document.createElement('div');
-    notes.className = 'part-notes';
-    notes.textContent = part.notes;
-    pane.appendChild(notes);
-  }
+  renderSources(part, pane);
 }
 
 // ── Chant version selector ───────────────────────────────────────────────────

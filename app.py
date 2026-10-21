@@ -533,7 +533,7 @@ def get_chant(chant_id: str):
                 LEFT JOIN local_chants lc
                        ON lps.chant_uuid LIKE 'local:%%'
                       AND lc.local_chant_id = SUBSTRING(lps.chant_uuid, 7)
-                WHERE COALESCE(gcm.chant_group_id, lc.chant_group_id) = :gid
+                WHERE COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id) = :gid
                 ORDER BY sp.display_order, lps.jurisdiction,
                          COALESCE(le.title, le.season, '')
             """), {'gid': row['chant_group_id']}).mappings().fetchall()
@@ -751,7 +751,24 @@ def list_assignment_authorities():
 # lets the caller/UI decide what to do with more than one. This also means the
 # page works outside the resolver's currently-materialized 2027-2028 window.
 
+class DayPartSource(BaseModel):
+    # One assignment authority's row naming this chant for this part.
+    assignment_authority_code: Optional[str] = None
+    authority_name: Optional[str] = None
+    option_num: int = 1
+    option_txt: Optional[str] = None
+    notes: Optional[str] = None
+    text_id: int
+    chant_uuid: Optional[str] = None
+    lit_epoch_slug: Optional[str] = None   # epoch the row hangs on (NULL = psalter/epoch-less)
+    assignment_jurisdiction: Optional[str] = None
+    book: Optional[str] = None
+
+
 class DayPartAssignment(BaseModel):
+    # One entry per (part, chant_group): every source that assigns this chant
+    # group to the part is listed in `sources`. The flat fields mirror the
+    # first source (lowest option_num, then authority sort_order).
     service_code: str
     part_code: str
     display_name: str
@@ -761,9 +778,11 @@ class DayPartAssignment(BaseModel):
     text_id: Optional[int] = None
     chant_uuid: Optional[str] = None
     chant_group_id: Optional[int] = None
+    chant_name: Optional[str] = None       # chant_group.canonical_name
     assignment_authority_code: Optional[str] = None
     assignment_jurisdiction: Optional[str] = None
     notes: Optional[str] = None
+    sources: List[DayPartSource] = []
 
 
 class DayFormulary(BaseModel):
@@ -785,23 +804,116 @@ class DayObservance(BaseModel):
     role: Optional[str] = None            # celebrated / commemoration / optional / None (unresolved)
     is_transferred: bool = False
     nominal_dt: Optional[str] = None
+    # Rank the parts were resolved at: the higher of this observance's own rank
+    # and the day's rank (issue #9). E.g. the feria on an obligatory memorial
+    # resolves at MEMORIAL; an optional memorial on a feria keeps its own rank.
+    effective_rank_code: Optional[str] = None
+    common_of: Optional[str] = None
     formularies: List[DayFormulary]
 
 
 class DayResponse(BaseModel):
     date: str
     jurisdiction: str
+    day_rank_code: Optional[str] = None   # highest rank among the day's observances
+    season_slug: Optional[str] = None     # proper_of_seasons day: the seasonal fallback chain
     observances: List[DayObservance]
 
 
+# lit_part_sources.rank_code holds the rank *classes* the books print rubrics for
+# ("in memoriis", "in festis", "in sollemnitatibus", "in dominicis per annum",
+# "in feriis per annum"). A finer p_lit_rank code also matches its class.
+_RANK_CLASS = {
+    # TRIDUUM: no class; those days are wholly proper.
+    'PRINCIPAL_TEMPORAL': 'SOLEMNITY',   # but see _rank_class: Sundays, Ash Wed, Holy Week
+    'SOLEMNITY':          'SOLEMNITY',
+    'PROPER_SOLEMNITY':   'SOLEMNITY',
+    'FEAST_OF_THE_LORD':  'FEAST',
+    'FEAST':              'FEAST',
+    'PROPER_FEAST':       'FEAST',
+    'SUNDAY':             'SUNDAY',
+    'PRIVILEGED_WEEKDAY': 'WEEKDAY',
+    'WEEKDAY':            'WEEKDAY',
+    'MEMORIAL':           'MEMORIAL',
+    'PROPER_MEMORIAL':    'MEMORIAL',
+    'OPTIONAL_MEMORIAL':  'OPTIONAL_MEMORIAL',
+}
+
+# GILH 236 / 233: at these hours nothing comes from the Common; what the saint's
+# Proper doesn't print (e.g. proper daytime antiphons) is from the current week
+# and day. The season's rank-keyed rubrics still apply, so the hymn takes the
+# memorial (or feast) tone.
+_HOURS_FROM_WEEKDAY = {
+    'MEMORIAL':          {'TERCE', 'SEXT', 'NONE', 'MIDDAY', 'COMPLINE'},
+    'OPTIONAL_MEMORIAL': {'TERCE', 'SEXT', 'NONE', 'MIDDAY', 'COMPLINE'},
+    'FEAST':             {'COMPLINE'},
+}
+
+# GILH 226-228, 231: on solemnities and feasts these are proper, and what the
+# Proper lacks comes from the Common, never from the current week and day.
+# (Memorials do fall back to the week and day: GILH 235.) I Vespers is always
+# the celebration's own.
+_PROPER_ONLY_SERVICES = {'INVITATORY', 'OFFREAD', 'LAUDS', 'VESPERS'}
+
+# Services taken whole: if the Proper/Common supplies any part, the season
+# fills none of the gaps (no Mass stitched together from saint + feria).
+_FORMULARY_SERVICES = {'MASS'}
+
+_UNDETERMINED_SORT = 9000   # p_lit_rank UNDETERMINED: rank not yet assigned
+
+# Day ranks on which a saint the day outranks may still be celebrated
+# (optional memorials; GILH 238: obligatory memorials in Lent become optional).
+# On Sundays, solemnities, feasts, Ash Wednesday, Holy Week and the Easter
+# octave no regard is taken of memorials (GILH 237).
+_OPTIONAL_DAY_RANKS = {'WEEKDAY', 'PRIVILEGED_WEEKDAY'}
+
+
+def _rank_class(rank_code: Optional[str], wkday: Optional[int],
+                season: Optional[str] = None) -> Optional[str]:
+    if rank_code in ('PRINCIPAL_TEMPORAL', 'SUNDAY') and wkday == 1:
+        return 'SUNDAY'
+    if rank_code == 'PRINCIPAL_TEMPORAL' and season == 'TQ':
+        return 'WEEKDAY'                 # Ash Wednesday, Mon-Thu of Holy Week
+    return _RANK_CLASS.get(rank_code)
+
+
+def _lps_rank_codes(rank_code: Optional[str], wkday: Optional[int],
+                    season: Optional[str] = None) -> List[str]:
+    """lit_part_sources.rank_code values that apply at this rank (NULL always does)."""
+    codes = [c for c in (rank_code, _rank_class(rank_code, wkday, season)) if c]
+    return list(dict.fromkeys(codes)) or ['']
+
+
+def _has_vespers1(rank_code: Optional[str], wkday: Optional[int],
+                  season: Optional[str] = None) -> bool:
+    # GILH 225 / 231: solemnities begin with Evening Prayer I; feasts have none,
+    # except feasts of the Lord falling on a Sunday.
+    return (_rank_class(rank_code, wkday, season) == 'SOLEMNITY'
+            or (rank_code == 'FEAST_OF_THE_LORD' and wkday == 1))
+
+
+def _ancestor_chain(conn, slug: Optional[str]) -> List[str]:
+    """[slug, parent, grandparent, ...] up lit_epoch_tree."""
+    if not slug:
+        return []
+    rows = conn.execute(text("""
+        WITH RECURSIVE ancestors AS (
+            -- CAST: a recursive CTE's column type comes from the anchor row, so a
+            -- bare short literal ('giles') would overflow/truncate longer parents.
+            SELECT CAST(:slug AS CHAR(64)) AS slug, 0 AS depth
+            UNION ALL
+            SELECT et.parent_slug, a.depth + 1
+            FROM ancestors a JOIN lit_epoch_tree et ON et.child_slug = a.slug
+            WHERE a.depth < 32
+        )
+        SELECT slug FROM ancestors ORDER BY depth
+    """), {'slug': slug}).fetchall()
+    return [r[0] for r in rows]
+
+
 _DAY_PARTS_SQL = """
-    WITH RECURSIVE ancestors AS (
-        -- CAST: a recursive CTE's column type comes from the anchor row, so a
-        -- bare short literal ('giles') would overflow/truncate longer parents.
-        SELECT CAST(:epoch_slug AS CHAR(64)) AS slug, 0 AS depth
-        UNION ALL
-        SELECT et.parent_slug, a.depth + 1
-        FROM ancestors a JOIN lit_epoch_tree et ON et.child_slug = a.slug
+    WITH ancestors AS (
+        {chain_sql}
     ),
     candidates AS (
         SELECT
@@ -809,9 +921,11 @@ _DAY_PARTS_SQL = """
             lps.part_id, lps.text_id, lps.option_num, lps.option_txt,
             lps.jurisdiction                AS assignment_jurisdiction,
             lps.assignment_authority_code, lps.notes, lps.chant_uuid,
-            COALESCE(gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
+            lps.lit_epoch_slug, lps.book,
+            COALESCE(lps.assignment_authority_code, '') AS authority_key,
+            COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
             CASE WHEN lps.lit_epoch_slug IS NOT NULL THEN 1 ELSE 0 END AS epoch_match,
-            anc.depth,
+            anc.depth, anc.src,
             (   (lps.cycle_wkday IS NOT NULL) +
                 (lps.cycle_sun   IS NOT NULL) +
                 (lps.wkday       IS NOT NULL) +
@@ -830,38 +944,42 @@ _DAY_PARTS_SQL = """
         LEFT JOIN local_chants lc
                ON lps.chant_uuid LIKE 'local:%'
               AND lc.local_chant_id = SUBSTRING(lps.chant_uuid, 7)
-        WHERE (
-            (lps.lit_epoch_slug IS NOT NULL AND anc.slug IS NOT NULL)
-            OR (
-                lps.lit_epoch_slug IS NULL
-                AND (lps.wknum_mod_4 IS NULL OR lps.wknum_mod_4 = MOD(:wknum, 4))
-                AND (lps.wknum_mod_2 IS NULL OR lps.wknum_mod_2 = MOD(:wknum, 2))
-            )
-        )
+        WHERE (lps.lit_epoch_slug IS NULL OR anc.slug IS NOT NULL)
+        -- Week parity ("per hebdomadas I et III" / psalter weeks) applies to
+        -- epoch rows too, e.g. TQ Compline, OT-OT daytime hymns.
+        AND (lps.wknum_mod_4 IS NULL OR lps.wknum_mod_4 = MOD(:wknum, 4))
+        AND (lps.wknum_mod_2 IS NULL OR lps.wknum_mod_2 = MOD(:wknum, 2))
         AND (lps.cycle_wkday IS NULL OR lps.cycle_wkday = :cycle_wk)
         AND (lps.cycle_sun   IS NULL OR lps.cycle_sun   = :cycle_sun)
         AND (lps.wkday       IS NULL OR lps.wkday       = :wkday)
-        -- Rank-conditioned assignments (Office: "in memoriis", "in sollemnitatibus").
-        -- A base code also covers its PROPER_ variant (MEMORIAL -> PROPER_MEMORIAL).
-        AND (lps.rank_code IS NULL OR :rank_code IN (lps.rank_code, CONCAT('PROPER_', lps.rank_code)))
+        -- Rank-conditioned assignments (Office: "in memoriis", "in sollemnitatibus"),
+        -- keyed on the effective rank and its class (see _lps_rank_codes).
+        AND (lps.rank_code IS NULL OR lps.rank_code IN ({rank_in}))
+        -- Per-service chain restrictions (anc.src: P=Proper, C=Common,
+        -- S=season fallback, T=the temporal observance's own chain):
+        -- proper_only services never fall back to the season; weekday_only
+        -- hours skip the Common (the saint's own Proper still wins).
+        AND NOT (COALESCE(anc.src, '') = 'S' AND sp.service_code IN ({proper_only_in}))
+        AND NOT (COALESCE(anc.src, '') = 'C' AND sp.service_code IN ({weekday_only_in}))
+        AND sp.service_code NOT IN ({excluded_in})
     ),
-    -- A part can carry several printed options (option_num 1, 2 "Vel ad
-    -- libitum", ...). First pick the winning tier per part (most specific
-    -- epoch, then jurisdiction), then return every option from that tier —
-    -- one row per option_num, best-cycle-match then text_id DESC (so the GM
-    -- twin of a GRADUALE row still wins). Partitioning by part_id alone kept
-    -- only the highest text_id, which hid option 1 whenever an option 2 existed.
+    -- Sources disagree, and the page documents what each one says: every
+    -- assignment authority resolves the part on its own (its own most specific
+    -- epoch, then jurisdiction), and every option from that authority's tier
+    -- is returned — one row per (authority, option_num), best-cycle-match then
+    -- text_id DESC (so the GM twin of a GRADUALE row still wins). Python then
+    -- groups the rows by chant_group.
     ranked AS (
         SELECT c.*,
             DENSE_RANK() OVER (
-                PARTITION BY c.part_id
+                PARTITION BY c.part_id, c.authority_key
                 ORDER BY
                     c.epoch_match       DESC,
                     c.depth             ASC,
                     c.jur_preference    DESC
             ) AS tier,
             ROW_NUMBER() OVER (
-                PARTITION BY c.part_id, COALESCE(c.option_num, 1)
+                PARTITION BY c.part_id, c.authority_key, COALESCE(c.option_num, 1)
                 ORDER BY
                     c.epoch_match       DESC,
                     c.depth             ASC,
@@ -871,31 +989,172 @@ _DAY_PARTS_SQL = """
             ) AS rn
         FROM candidates c
     )
-    SELECT service_code, part_code, display_name, display_order,
-           COALESCE(option_num, 1) AS option_num, option_txt,
-           text_id, chant_uuid, chant_group_id,
-           assignment_authority_code, assignment_jurisdiction, notes
-    FROM ranked
-    WHERE tier = 1 AND rn = 1
-    ORDER BY service_code, display_order, option_num
+    SELECT r.service_code, r.part_code, r.display_name, r.display_order,
+           COALESCE(r.option_num, 1) AS option_num, r.option_txt,
+           r.text_id, r.chant_uuid, r.chant_group_id, cg.canonical_name AS chant_name,
+           r.assignment_authority_code, paa.display_name AS authority_name,
+           COALESCE(paa.sort_order, 999) AS authority_sort,
+           r.assignment_jurisdiction, r.notes, r.lit_epoch_slug, r.book, r.src,
+           r.epoch_match, r.depth, r.jur_preference, r.cycle_specificity
+    FROM ranked r
+    LEFT JOIN chant_group cg ON cg.chant_group_id = r.chant_group_id
+    LEFT JOIN p_assignment_authority paa ON paa.authority_code = r.assignment_authority_code
+    WHERE r.tier = 1 AND r.rn = 1
+    ORDER BY r.service_code, r.display_order, option_num, authority_sort, r.text_id
 """
 
 
+def _in_list(prefix: str, values, params: dict) -> str:
+    """Bind `values` as :prefix0, :prefix1, ... and return the IN-list SQL."""
+    values = list(values) or ['']
+    for i, v in enumerate(values):
+        params[f'{prefix}{i}'] = v
+    return ', '.join(f':{prefix}{i}' for i in range(len(values)))
+
+
 def _day_parts_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) -> dict:
-    """Return {service_code: [DayPartAssignment, ...]} for one epoch slug."""
-    rows = conn.execute(text(_DAY_PARTS_SQL), {
-        'epoch_slug': epoch_slug,
+    """Return {service_code: [DayPartAssignment, ...]} for one epoch slug.
+
+    Candidate epochs, most specific first (issue #9):
+      1. the observance's own chain (epoch_slug and its ancestors),
+      2. for a saint: its Common (proper_of_saints.common_of and ancestors),
+      3. for a saint: the season, i.e. the proper_of_seasons day's chain,
+      4. epoch-less rows (psalter, OCO), as before.
+    Every candidate is keyed on the observance's effective rank, so the
+    season's rank-conditioned rubrics ("in memoriis") apply to the saint.
+    """
+    own = _ancestor_chain(conn, epoch_slug)
+    is_temporal = ctx.get('is_temporal', False)
+    if is_temporal:
+        chain = [(s, 'T') for s in own]
+    else:
+        chain = ([(s, 'P') for s in own]
+                 + [(s, 'C') for s in ctx.get('common_chain', [])]
+                 + [(s, 'S') for s in ctx.get('season_chain', [])])
+    if not chain:
+        chain = [('', 'T')]   # keep the CTE non-empty
+    seen, deduped = set(), []
+    for slug, src in chain:
+        if slug not in seen:
+            seen.add(slug)
+            deduped.append((slug, src))
+
+    rank_code, wkday, season = ctx.get('rank_code'), ctx['wkday'], ctx.get('season')
+    rclass = _rank_class(rank_code, wkday, season)
+    params = {
         'jurisdiction': jurisdiction,
         'cycle_wk': ctx['cycle_wk'],
         'cycle_sun': ctx['cycle_sun'],
-        'wkday': ctx['wkday'],
+        'wkday': wkday,
         'wknum': ctx['wknum'],
-        'rank_code': ctx.get('rank_code'),
-    }).mappings().fetchall()
+    }
+    chain_sql = '\n        UNION ALL '.join(
+        f'SELECT CAST(:anc{i} AS CHAR(64)) AS slug, {i} AS depth, :src{i} AS src'
+        for i in range(len(deduped)))
+    for i, (slug, src) in enumerate(deduped):
+        params[f'anc{i}'], params[f'src{i}'] = slug, src
+    # A saint below solemnity rank has no I Vespers (GILH 225, 231).
+    excluded = [] if is_temporal or _has_vespers1(rank_code, wkday, season) else ['VESPERS1']
+    proper_only = {'VESPERS1'}
+    if rclass in ('SOLEMNITY', 'FEAST'):
+        proper_only |= _PROPER_ONLY_SERVICES
+    sql = (_DAY_PARTS_SQL
+           .replace('{chain_sql}', chain_sql)
+           .replace('{rank_in}', _in_list('rk', _lps_rank_codes(rank_code, wkday, season), params))
+           .replace('{proper_only_in}', _in_list('po', proper_only, params))
+           .replace('{weekday_only_in}', _in_list('wo', _HOURS_FROM_WEEKDAY.get(rclass, ()), params))
+           .replace('{excluded_in}', _in_list('ex', excluded, params)))
+    rows = [dict(r) for r in conn.execute(text(sql), params).mappings().fetchall()]
 
+    # Formulary services are taken whole, across all sources: if any source
+    # gives the saint's own Mass, no source's seasonal Mass is offered.
+    own_formularies = {r['service_code'] for r in rows
+                       if r['src'] in ('P', 'C') and r['service_code'] in _FORMULARY_SERVICES}
+    rows = [r for r in rows
+            if not (r['src'] == 'S' and r['service_code'] in own_formularies)]
+    return _group_by_chant(_drop_overridden(rows))
+
+
+_PSALMODY_ANTS = {'ant', 'ant1', 'ant2', 'ant3'}
+_DAYTIME_HOURS = {'TERCE', 'SEXT', 'NONE'}
+
+
+def _overlaps(a: dict, b: dict) -> bool:
+    """Do two different parts fill the same slot? The single antiphon over an
+    hour's psalmody ('ant') stands in for the per-psalm ones ('ant1'..'ant3'),
+    and MIDDAY (hora media, one set for all three hours) for Terce/Sext/None."""
+    if a['part_code'] not in _PSALMODY_ANTS or b['part_code'] not in _PSALMODY_ANTS:
+        return False
+    sa, sb = a['service_code'], b['service_code']
+    if sa == sb:
+        return True
+    return {sa, sb} <= _DAYTIME_HOURS | {'MIDDAY'} and 'MIDDAY' in (sa, sb)
+
+
+def _specificity(r: dict) -> tuple:
+    # Same order as the SQL tiering: an epoch beats none, a nearer epoch beats a
+    # farther one (Proper < Common < season), then jurisdiction, then cycle/
+    # weekday/rank keys.
+    depth = r['depth'] if r['depth'] is not None else 10_000
+    return (r['epoch_match'], -depth, r['jur_preference'], r['cycle_specificity'])
+
+
+def _drop_overridden(rows: list) -> list:
+    """Within one assignment authority, a row is dropped when an overlapping row
+    for a different part is strictly more specific (e.g. the season's 'ant' at
+    None overrides the psalter's 'ant1'/'ant3'). Same-part overriding is done in
+    SQL; different authorities are documented side by side, never overridden."""
+    def overridden(r):
+        slot, mine = (r['service_code'], r['part_code']), _specificity(r)
+        return any(q['assignment_authority_code'] == r['assignment_authority_code']
+                   and (q['service_code'], q['part_code']) != slot
+                   and _overlaps(q, r)
+                   and _specificity(q) > mine
+                   for q in rows)
+    return [r for r in rows if not overridden(r)]
+
+
+def _group_by_chant(rows: list) -> dict:
+    """Rows (one per authority × option) → {service_code: [DayPartAssignment]},
+    one entry per (part, chant_group), each listing every source that assigns it.
+    Rows come ordered by option_num, authority sort_order, so the first source
+    of each group is its primary and groups keep that order."""
     services: dict = {}
+    groups: dict = {}
     for r in rows:
-        services.setdefault(r['service_code'], []).append(DayPartAssignment(**dict(r)))
+        if r['chant_group_id'] is not None:
+            gkey = ('group', r['chant_group_id'])
+        elif r['chant_uuid']:
+            gkey = ('chant', r['chant_uuid'])
+        else:
+            gkey = ('text', r['text_id'])
+        key = (r['service_code'], r['part_code'], gkey)
+        source = DayPartSource(
+            assignment_authority_code=r['assignment_authority_code'],
+            authority_name=r['authority_name'],
+            option_num=r['option_num'], option_txt=r['option_txt'], notes=r['notes'],
+            text_id=r['text_id'], chant_uuid=r['chant_uuid'],
+            lit_epoch_slug=r['lit_epoch_slug'],
+            assignment_jurisdiction=r['assignment_jurisdiction'], book=r['book'],
+        )
+        entry = groups.get(key)
+        if entry is None:
+            entry = DayPartAssignment(
+                service_code=r['service_code'], part_code=r['part_code'],
+                display_name=r['display_name'], display_order=r['display_order'],
+                option_num=r['option_num'], option_txt=r['option_txt'],
+                text_id=r['text_id'], chant_uuid=r['chant_uuid'],
+                chant_group_id=r['chant_group_id'], chant_name=r['chant_name'],
+                assignment_authority_code=r['assignment_authority_code'],
+                assignment_jurisdiction=r['assignment_jurisdiction'],
+                notes=r['notes'], sources=[],
+            )
+            groups[key] = entry
+            services.setdefault(r['service_code'], []).append(entry)
+        entry.sources.append(source)
+    # Tabs in printed-option order, then authority order (already the row order).
+    for parts in services.values():
+        parts.sort(key=lambda p: (p.display_order, p.part_code))
     return services
 
 
@@ -960,7 +1219,7 @@ def get_day(date: str, jurisdiction: str = Query('US')):
             temporal = conn.execute(text("""
                 SELECT pos.lit_day_id AS epoch_slug, le.title, le.kind, le.rank_code,
                        plr.display_name AS rank_display_name, plr.sort_order AS rank_sort,
-                       pos.cycle_wk, pos.cycle_sun, pos.wkday, le.wknum
+                       pos.cycle_wk, pos.cycle_sun, pos.wkday, le.wknum, le.season
                 FROM proper_of_seasons pos
                 JOIN lit_epoch le  ON le.slug        = pos.lit_day_id
                 JOIN p_lit_rank plr ON plr.rank_code = le.rank_code
@@ -978,6 +1237,7 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                 'cycle_sun': temporal['cycle_sun'],
                 'wkday': temporal['wkday'],
                 'wknum': temporal['wknum'],
+                'season': temporal['season'],
             }
 
             observances: dict = {
@@ -987,19 +1247,21 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                     'kind': temporal['kind'],
                     'rank_code': temporal['rank_code'],
                     'rank_display_name': temporal['rank_display_name'],
-                    'role': 'celebrated',
+                    'role': None,
                     'is_transferred': False,
                     'nominal_dt': None,
+                    'common_of': None,
                     '_rank_sort': temporal['rank_sort'],
+                    '_temporal': True,
                 }
             }
 
             # Any saint whose fixed nominal date is this civil date, regardless
             # of whether it would actually be celebrated (no precedence run here).
             saint_rows = conn.execute(text("""
-                SELECT pos.slug AS epoch_slug, le.title, le.kind, le.rank_code,
+                SELECT pos.slug AS epoch_slug, le.title, le.kind, pos.rank_code,
                        plr.display_name AS rank_display_name, plr.sort_order AS rank_sort,
-                       pos.jurisdiction
+                       pos.jurisdiction, NULLIF(pos.common_of, '') AS common_of
                 FROM proper_of_saints pos
                 JOIN lit_epoch le   ON le.slug        = pos.slug
                 JOIN p_lit_rank plr ON plr.rank_code = pos.rank_code
@@ -1020,6 +1282,7 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                     'role': None,
                     'is_transferred': False,
                     'nominal_dt': None,
+                    'common_of': r['common_of'],
                     '_rank_sort': r['rank_sort'],
                 }
 
@@ -1028,11 +1291,17 @@ def get_day(date: str, jurisdiction: str = Query('US')):
             # observance transferred onto this date from elsewhere.
             resolver_rows = conn.execute(text("""
                 SELECT r.epoch_slug, r.role, r.is_transferred, r.nominal_dt,
-                       le.title, le.kind, le.rank_code,
-                       plr.display_name AS rank_display_name, plr.sort_order AS rank_sort
+                       le.title, le.kind, r.rank_code,
+                       plr.display_name AS rank_display_name, plr.sort_order AS rank_sort,
+                       (SELECT NULLIF(ps.common_of, '') FROM proper_of_saints ps
+                         WHERE ps.slug = r.epoch_slug AND ps.jurisdiction IN (:jur, 'UNIVERSAL')
+                         ORDER BY CASE WHEN ps.jurisdiction = :jur THEN 0 ELSE 1 END
+                         LIMIT 1) AS common_of
                 FROM lit_observance_resolved r
                 JOIN lit_epoch le   ON le.slug        = r.epoch_slug
-                JOIN p_lit_rank plr ON plr.rank_code = le.rank_code
+                -- r.rank_code, not le.rank_code: saints carry their rank on
+                -- proper_of_saints, and lit_epoch.rank_code is NULL for most.
+                JOIN p_lit_rank plr ON plr.rank_code = r.rank_code
                 WHERE r.dt = :dt AND r.jurisdiction IN (:jur, 'UNIVERSAL')
                   AND r.role != 'omitted'
                 ORDER BY CASE WHEN r.jurisdiction = :jur THEN 0 ELSE 1 END
@@ -1059,15 +1328,49 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                         'role': r['role'],
                         'is_transferred': bool(r['is_transferred']),
                         'nominal_dt': nominal,
+                        'common_of': r['common_of'],
                         '_rank_sort': r['rank_sort'],
                     }
+
+            # Rank of the day: the highest-ranked observance (lowest sort_order).
+            # WEEKDAY sorts above OPTIONAL_MEMORIAL and UNDETERMINED sorts last,
+            # so neither displaces the feria.
+            day_obs = min(observances.values(), key=lambda o: o['_rank_sort'])
+            day_rank, day_sort = day_obs['rank_code'], day_obs['_rank_sort']
+            if not resolver_rows:
+                # No materialized resolution for this date: the day's winner is
+                # celebrated; optional memorials on a feria are optional.
+                for obs in observances.values():
+                    if obs is day_obs:
+                        obs['role'] = 'celebrated'
+                    elif obs['rank_code'] == 'OPTIONAL_MEMORIAL' and day_rank in _OPTIONAL_DAY_RANKS:
+                        obs['role'] = 'optional'
+
+            season_chain = _ancestor_chain(conn, temporal['epoch_slug'])
 
             result = []
             sort_keys = []
             for obs in observances.values():
+                own_sort = obs.pop('_rank_sort', 9999)
+                is_temporal = obs.pop('_temporal', False)
+                # Each tab shows the liturgy as it would be if that observance were
+                # celebrated today: keyed on its own rank and the day's season. A
+                # saint the day outranks gets its Proper/Common only, with no season
+                # fill-in, unless the day leaves room to celebrate it (GILH 237-239).
+                # A saint with no determined rank takes the day's.
+                outranked = obs is not day_obs and day_sort < own_sort
+                eff_rank = obs['rank_code'] if own_sort < _UNDETERMINED_SORT else day_rank
+                fill_from_season = not outranked or day_rank in _OPTIONAL_DAY_RANKS
+                obs['effective_rank_code'] = eff_rank
                 obs['formularies'] = _formularies_for_epoch(
-                    conn, jurisdiction, obs['epoch_slug'], {**ctx, 'rank_code': obs['rank_code']})
-                sort_keys.append(obs.pop('_rank_sort', 9999))
+                    conn, jurisdiction, obs['epoch_slug'], {
+                        **ctx,
+                        'rank_code': eff_rank,
+                        'is_temporal': is_temporal,
+                        'common_chain': _ancestor_chain(conn, obs['common_of']),
+                        'season_chain': season_chain if fill_from_season else [],
+                    })
+                sort_keys.append(own_sort)
                 result.append(DayObservance(**obs))
     except HTTPException:
         raise
@@ -1077,7 +1380,8 @@ def get_day(date: str, jurisdiction: str = Query('US')):
     # Most important (lowest p_lit_rank.sort_order) first.
     result = [o for _, o in sorted(zip(sort_keys, result), key=lambda p: p[0])]
 
-    return DayResponse(date=date, jurisdiction=jurisdiction, observances=result)
+    return DayResponse(date=date, jurisdiction=jurisdiction, day_rank_code=day_rank,
+                       season_slug=temporal['epoch_slug'], observances=result)
 
 
 @app.post("/api/chant_groups/{group_id}/assignments", response_model=Assignment)
@@ -1951,7 +2255,7 @@ _LPS_ASSIGN_SELECT = """
            lps.lit_epoch_slug, le.title AS epoch_title,
            lps.wkday, lps.cycle_sun, lps.cycle_wkday, lps.option_num,
            lps.chant_uuid,
-           COALESCE(gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
+           COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
            cg.canonical_name AS chant_name,
            lps.review_status, lps.notes,
            sp.part_id, sp.part_code, sp.display_name AS part_name,
@@ -1967,7 +2271,7 @@ _LPS_ASSIGN_SELECT = """
            ON lps.chant_uuid LIKE 'local:%%'
           AND lc.local_chant_id = SUBSTRING(lps.chant_uuid, 7)
     LEFT JOIN chant_group cg
-           ON cg.chant_group_id = COALESCE(gcm.chant_group_id, lc.chant_group_id)
+           ON cg.chant_group_id = COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id)
 """
 
 
@@ -2005,7 +2309,7 @@ def list_lit_part_assignments(
     offset: int = 0,
 ):
     # Default: only rows that have a chant assigned (mirrors old lpa behaviour).
-    conditions = ["lps.chant_uuid IS NOT NULL"]
+    conditions = ["(lps.chant_uuid IS NOT NULL OR lps.chant_group_id IS NOT NULL)"]
     params: dict = {'limit': limit, 'offset': offset}
     if review_status:
         conditions.append("lps.review_status = :review_status")
@@ -2293,7 +2597,7 @@ def lit_epoch_assignments_review(slug: str):
                 anc_rows = conn.execute(text(f"""
                     {_LPS_ASSIGN_SELECT}
                     WHERE lps.lit_epoch_slug IN ({in_ph})
-                      AND lps.chant_uuid IS NOT NULL
+                      AND (lps.chant_uuid IS NOT NULL OR lps.chant_group_id IS NOT NULL)
                     ORDER BY sp.display_order, lps.jurisdiction, lps.option_num
                 """), in_params).mappings().fetchall()
                 ancestor_assignments = [_lps_as_assign_from_row(r) for r in anc_rows]
@@ -2302,7 +2606,7 @@ def lit_epoch_assignments_review(slug: str):
             own_rows = conn.execute(text(f"""
                 {_LPS_ASSIGN_SELECT}
                 WHERE lps.lit_epoch_slug = :slug
-                  AND lps.chant_uuid IS NOT NULL
+                  AND (lps.chant_uuid IS NOT NULL OR lps.chant_group_id IS NOT NULL)
                 ORDER BY sp.display_order, lps.jurisdiction, lps.option_num
             """), {'slug': slug}).mappings().fetchall()
             own_assignments = [_lps_as_assign_from_row(r) for r in own_rows]
@@ -2336,7 +2640,7 @@ def lit_epoch_assignments_review(slug: str):
                 child_rows = conn.execute(text(f"""
                     {_LPS_ASSIGN_SELECT}
                     WHERE lps.lit_epoch_slug IN ({in_ph2})
-                      AND lps.chant_uuid IS NOT NULL
+                      AND (lps.chant_uuid IS NOT NULL OR lps.chant_group_id IS NOT NULL)
                     ORDER BY sp.display_order, lps.jurisdiction, lps.option_num
                 """), in_params2).mappings().fetchall()
                 for r in child_rows:
@@ -3947,7 +4251,7 @@ def composition_sources():
                 LEFT JOIN p_assignment_authority paa
                        ON paa.authority_code = lps.assignment_authority_code
                 WHERE lps.assignment_authority_code IS NOT NULL
-                  AND lps.chant_uuid IS NOT NULL
+                  AND (lps.chant_uuid IS NOT NULL OR lps.chant_group_id IS NOT NULL)
                 GROUP BY lps.assignment_authority_code, paa.display_name, paa.sort_order
                 ORDER BY paa.sort_order
             """)).mappings().fetchall()
