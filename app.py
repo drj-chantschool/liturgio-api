@@ -141,6 +141,18 @@ async def _read_only_guard(request, call_next):
     return await call_next(request)
 
 
+# Pages and /static files carry no version in their URLs, so make browsers
+# revalidate them (a cheap 304 when unchanged): a heuristically cached day.js
+# paired with a newer day.html (or the reverse) breaks the page after a deploy.
+@app.middleware("http")
+async def _revalidate_assets(request, call_next):
+    response = await call_next(request)
+    if (not request.url.path.startswith('/api/')
+            and 'cache-control' not in response.headers):
+        response.headers['Cache-Control'] = 'no-cache'
+    return response
+
+
 # Submissions carry whole GABC/text fields but nothing bigger. Checked before
 # the body is read; a body without Content-Length (chunked) is refused.
 MAX_EDIT_BYTES = 256 * 1024

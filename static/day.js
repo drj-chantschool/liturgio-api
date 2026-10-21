@@ -46,8 +46,15 @@ const emptyEl         = $('day-empty');
 const panelEl         = $('observance-panel');
 const obsTitleEl      = $('observance-title');
 const obsMetaEl       = $('observance-meta');
-const serviceTabsEl   = $('service-tabs');
 const serviceGroupsEl = $('service-groups');
+const serviceTabsEl   = $('service-tabs') || (() => {
+  // A day.html cached from before the service tabs (#10) lacks this row.
+  const el = document.createElement('div');
+  el.id = 'service-tabs';
+  el.hidden = true;
+  serviceGroupsEl.before(el);
+  return el;
+})();
 
 // ── API helper ───────────────────────────────────────────────────────────────
 async function apiFetch(url) {
