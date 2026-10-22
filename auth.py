@@ -7,6 +7,9 @@ password change or deactivation) invalidates every outstanding cookie.
 
 Users/roles live in app_user / p_app_role (liturgio-tools/sql/make-app-users.sql)
 and are managed with manage_users.py.
+
+Bots send `Authorization: Bearer <token>` instead (api_token, liturgio-api #6);
+only the token's SHA-256 is stored, and a token may only GET and submit edits.
 """
 import base64
 import hashlib
@@ -46,6 +49,26 @@ PUBLIC_PATHS = {
 READ_ONLY_EXEMPT = {'/auth/login', '/auth/logout', '/auth/password', '/api/edit_queue'}
 # Writes any signed-in user may make on their own account, whatever their role.
 SELF_SERVICE = {'/auth/password'}
+
+# Bearer tokens (api_token, manage_users.py token ...) are for bots: they may
+# read anything a GET reaches and submit to the edit queue, nothing else.
+TOKEN_POSTS = {'/api/edit_queue'}
+TOKEN_DENIED = {'/profile', '/api/me/profile'}
+TOKEN_PREFIX = 'lt_'
+_TOKEN_TOUCH_EVERY = 5 * 60
+
+def new_token() -> str:
+    return TOKEN_PREFIX + secrets.token_urlsafe(32)
+
+def hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode()).hexdigest()
+
+def _token_may(method: str, path: str) -> bool:
+    if path.startswith('/auth/') or path in TOKEN_DENIED:
+        return False
+    if method in ('GET', 'HEAD'):
+        return True
+    return method == 'POST' and path in TOKEN_POSTS
 
 MIN_PASSWORD_LEN = 10
 PASSWORD_CHANGE_DISABLED = ('Password changes are not enabled on this server yet; '
@@ -143,6 +166,9 @@ class Auth:
         self._prod = prod
         self._secret = _load_secret(prod)
         self._cache: dict = {}      # user_id -> (fetched_at, row or None)
+        self._tokens: dict = {}     # token_hash -> (fetched_at, row or None)
+        self._touched: dict = {}    # token_id -> last last_used_at stamp (this instance)
+        self._touch_ok = True
         self._cache_lock = threading.Lock()
 
     # Users are re-read at most every 30 s so deactivation/role changes land
@@ -176,8 +202,73 @@ class Auth:
             return None
         return user
 
+    # Token rows are cached like users, so a revoke lands within 30 s.
+    def token_user(self, token: str) -> Optional[dict]:
+        h = hash_token(token)
+        now = time.time()
+        with self._cache_lock:
+            hit = self._tokens.get(h)
+        if hit and now - hit[0] < 30:
+            row = hit[1]
+        else:
+            with self._ro().connect() as conn:
+                r = conn.execute(text("""
+                    SELECT token_id, user_id, user_epoch, revoked_at
+                    FROM api_token WHERE token_hash = :h
+                """), {'h': h}).mappings().first()
+            row = dict(r) if r else None
+            with self._cache_lock:
+                self._tokens[h] = (now, row)
+        if not row or row['revoked_at'] is not None:
+            return None
+        user = self._user(row['user_id'])
+        if not user or not user['is_active'] or user['session_epoch'] != row['user_epoch']:
+            return None
+        self._touch(row['token_id'], now)
+        return user
+
+    def _touch(self, token_id: int, now: float):
+        """Best effort: stamp last_used_at via liturgio_auth (needs the grant in
+        make-app-users.sql); a missing grant just turns stamping off."""
+        if not self._touch_ok or now - self._touched.get(token_id, 0) < _TOKEN_TOUCH_EVERY:
+            return
+        self._touched[token_id] = now
+        try:
+            with self._pw_writer().begin() as conn:
+                conn.execute(text('UPDATE api_token SET last_used_at = NOW() WHERE token_id = :id'),
+                             {'id': token_id})
+        except (DBAPIError, HTTPException):
+            self._touch_ok = False
+
+    async def _token_request(self, request: Request, call_next, authz: str):
+        # A request with an Authorization header is judged on it alone; the
+        # cookie is ignored, so neither credential can stand in for the other.
+        ip = _client_ip(request)
+        if _throttled(ip):
+            return JSONResponse({'detail': 'Too many failed attempts; try again later'},
+                                status_code=429)
+        scheme, _, token = authz.partition(' ')
+        token = token.strip()
+        user = self.token_user(token) if scheme.lower() == 'bearer' and token else None
+        if user is None:
+            _record_fail(ip)
+            return JSONResponse({'detail': 'Invalid or revoked API token'}, status_code=401,
+                                headers={'WWW-Authenticate': 'Bearer'})
+        if not _token_may(request.method, request.url.path):
+            return JSONResponse({'detail': 'API tokens may only read and submit to the edit queue'},
+                                status_code=403)
+        if request.method not in ('GET', 'HEAD') and user['role_level'] < WRITE_LEVEL:
+            return JSONResponse({'detail': f"Role {user['role_name']} cannot make changes"},
+                                status_code=403)
+        request.state.user = user
+        request.state.via_token = True
+        return await call_next(request)
+
     async def middleware(self, request: Request, call_next):
         path = request.url.path
+        authz = request.headers.get('authorization')
+        if authz is not None:
+            return await self._token_request(request, call_next, authz)
         if path in PUBLIC_PATHS:
             return await call_next(request)
         user = self.current_user(request)

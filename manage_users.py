@@ -6,14 +6,19 @@ local→DO refresh, so --do is the only way a user change reaches prod.
 
     python manage_users.py list [--do]
     python manage_users.py roles
-    python manage_users.py add USERNAME --role EDITOR [--name "Full Name"] [--do]
+    python manage_users.py add USERNAME --role EDITOR [--name "Full Name"] [--no-password] [--do]
     python manage_users.py passwd USERNAME [--do]
     python manage_users.py role USERNAME ADMIN [--do]
     python manage_users.py disable USERNAME [--do]
     python manage_users.py enable USERNAME [--do]
+    python manage_users.py token create USERNAME [--label "nightly job"] [--do]
+    python manage_users.py token list [USERNAME] [--do]
+    python manage_users.py token revoke USERNAME [--id TOKEN_ID] [--do]
 
 Passwords are prompted for (never taken on the command line). `passwd` and
-`disable` bump session_epoch, which signs the user out everywhere.
+`disable` bump session_epoch, which signs the user out everywhere and also
+kills the user's API tokens. `token create` prints the token once; only its
+hash is stored. `token revoke` without --id revokes all of the user's tokens.
 """
 import argparse
 import getpass
@@ -23,7 +28,7 @@ import sys
 import keyring
 from sqlalchemy import create_engine, text
 
-from auth import MIN_PASSWORD_LEN, hash_password
+from auth import MIN_PASSWORD_LEN, hash_password, hash_token, new_token
 
 _DO_HOST = 'db-mysql-nyc3-73323-do-user-34645648-0.d.db.ondigitalocean.com'
 _CA = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'ca-certificate.crt')
@@ -92,7 +97,8 @@ def cmd_roles(args):
 
 def cmd_add(args):
     role = args.role.upper()
-    pw_hash = hash_password(_prompt_password())
+    # A bot (token-only) account gets a hash no password can match.
+    pw_hash = '!no-password' if args.no_password else hash_password(_prompt_password())
     for name, eng in _targets(args):
         with eng.begin() as conn:
             conn.execute(text("""
@@ -130,6 +136,57 @@ def cmd_enable(args):
     _update(args, 'UPDATE app_user SET is_active = 1 WHERE username = :u', {}, 'enabled')
 
 
+def cmd_token_create(args):
+    (name, eng), = _targets(args)
+    token = new_token()
+    with eng.begin() as conn:
+        user = conn.execute(text('SELECT user_id, session_epoch, is_active FROM app_user '
+                                 'WHERE username = :u'), {'u': args.username}).first()
+        if not user:
+            raise SystemExit(f'No user {args.username!r}')
+        if not user.is_active:
+            raise SystemExit(f'{args.username} is disabled')
+        tid = conn.execute(text("""
+            INSERT INTO api_token (user_id, token_hash, label, user_epoch)
+            VALUES (:id, :h, :l, :ep)"""),
+            {'id': user.user_id, 'h': hash_token(token), 'l': args.label,
+             'ep': user.session_epoch}).lastrowid
+    print(f'{name}: token {tid} for {args.username}. Shown once, store it now:')
+    print(token)
+
+
+def cmd_token_list(args):
+    (name, eng), = _targets(args)
+    with eng.connect() as conn:
+        rows = conn.execute(text("""
+            SELECT t.token_id, u.username, t.label, t.created_at, t.last_used_at,
+                   t.revoked_at, t.user_epoch <> u.session_epoch AS stale
+            FROM api_token t JOIN app_user u ON u.user_id = t.user_id
+            WHERE :u IS NULL OR u.username = :u
+            ORDER BY u.username, t.token_id"""), {'u': args.username}).all()
+    print(f'── {name}')
+    for r in rows:
+        state = ('revoked ' + str(r.revoked_at) if r.revoked_at else
+                 'dead (password changed / disabled)' if r.stale else 'active')
+        print(f'  {r.token_id:>4}  {r.username:<16} {r.label or "":<24} '
+              f'created {r.created_at}  used {r.last_used_at or "never"}  {state}')
+    if not rows:
+        print('  (no tokens)')
+
+
+def cmd_token_revoke(args):
+    (name, eng), = _targets(args)
+    with eng.begin() as conn:
+        _require_one(conn, args.username)
+        n = conn.execute(text("""
+            UPDATE api_token t JOIN app_user u ON u.user_id = t.user_id
+            SET t.revoked_at = NOW()
+            WHERE u.username = :u AND t.revoked_at IS NULL
+              AND (:id IS NULL OR t.token_id = :id)"""),
+            {'u': args.username, 'id': args.id}).rowcount
+    print(f'{name}: revoked {n} token(s) of {args.username}')
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = ap.add_subparsers(dest='cmd', required=True)
@@ -147,11 +204,25 @@ def main():
     a = p('add', cmd_add)
     a.add_argument('--role', required=True)
     a.add_argument('--name')
+    a.add_argument('--no-password', action='store_true',
+                   help='token-only account (e.g. claude-bot): password login is impossible')
     p('passwd', cmd_passwd)
     r = p('role', cmd_role)
     r.add_argument('role')
     p('disable', cmd_disable)
     p('enable', cmd_enable)
+
+    tok = sub.add_parser('token').add_subparsers(dest='token_cmd', required=True)
+    for tname, fn in (('create', cmd_token_create), ('list', cmd_token_list),
+                      ('revoke', cmd_token_revoke)):
+        sp = tok.add_parser(tname)
+        sp.add_argument('username', type=str.lower, nargs='?' if tname == 'list' else None)
+        sp.add_argument('--do', action='store_true', help='act on DO instead of local')
+        sp.set_defaults(fn=fn)
+        if tname == 'create':
+            sp.add_argument('--label')
+        if tname == 'revoke':
+            sp.add_argument('--id', type=int, help='revoke only this token (default: all)')
 
     args = ap.parse_args()
     args.fn(args)

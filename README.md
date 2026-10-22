@@ -68,6 +68,19 @@ everywhere else. On prod this needs its own least-privilege DB user, `liturgio_a
 (DEPLOYMENT_PLAN.md, login rollout step 5).
 
 Session cookies are signed with `LITURGIO_SESSION_SECRET` (required in prod).
+
+Bots authenticate with `Authorization: Bearer <token>` instead of a cookie
+(liturgio-api #6). A token can GET anything and `POST /api/edit_queue`; all
+other requests get 403, and `/auth/*` and the profile are always off-limits.
+An unknown, revoked or dead token gets 401. Only the token's SHA-256 is stored
+(`api_token`). A password change or `disable` kills the user's tokens.
+
+    python manage_users.py add claude-bot --role EDITOR --name "Claude (bot)" --no-password [--do]
+    python manage_users.py token create claude-bot --label "nightly job" [--do]   # prints it once
+    python manage_users.py token list [claude-bot] [--do]
+    python manage_users.py token revoke claude-bot [--id N] [--do]
+
+A revoke takes effect within 30 s (the per-instance cache).
 Locally the secret is created in the keyring (`liturgio-api`/`session_secret`)
 on first run.
 

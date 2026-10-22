@@ -176,6 +176,21 @@ instead of on DO. Use it for testing and for edits submitted to a local
 (`liturgio_apply_test`): approve, reject, conflict, non-allowlisted table and
 column, chained and undo edits, cross-run chaining, re-run recovery, and dry run.
 
+### Bot API tokens (#6)
+
+Prereq for scheduled cloud jobs (#7). Run on DO as `doadmin`:
+1. The `api_token` block at the end of `liturgio-tools/sql/make-app-users.sql`
+   (only DO's copy matters: `api_token` is in `KEEP_ON_DO`, like `app_user`).
+2. Let `liturgio_auth` stamp `last_used_at` (optional; without it, stamping just stays off):
+   ```sql
+   GRANT SELECT (token_id), UPDATE (last_used_at) ON liturgio.api_token TO 'liturgio_auth'@'%';
+   ```
+3. Deploy. Then `manage_users.py add claude-bot --role EDITOR --name "Claude (bot)" --no-password --do`
+   and `manage_users.py token create claude-bot --label <job> --do`. Store the printed
+   token only where the job reads it.
+4. Check: `curl -H "Authorization: Bearer <token>" https://<app>/api/me` returns 200,
+   `/api/me/profile` returns 403, and a junk token returns 401.
+
 ## Todos
 
 - [ ] **Decide on App Platform sizing.** The spec runs 2 × `apps-s-1vcpu-1gb`
