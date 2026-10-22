@@ -1617,3 +1617,5 @@ select:focus { border-color: var(--accent-lt); }
   #observance-tabs { padding: 0.5rem 0.8rem; overflow-x: auto; flex-wrap: nowrap; }
   .observance-tab { flex-shrink: 0; }
 }
+
+.chant-commentary { font-size: 0.8rem; font-style: italic; color: #7a6a58; margin: 0 0 0.3em 0.5em; }
