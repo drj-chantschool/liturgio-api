@@ -46,8 +46,8 @@ function renderGabc(gabc, container, versesHtml) {
       const ctxt = new exsurge.ChantContext();
       // Phones: scale notation and lyrics down (exsurge defaults: 1/16 glyph scaling, 16px font)
       if (window.matchMedia('(max-width: 760px)').matches) {
-        ctxt.setGlyphScaling((1 / 16) * 0.7);
-        ctxt.setFont("'Palatino Linotype', 'Book Antiqua', Palatino, serif", 11.5);
+        ctxt.setGlyphScaling((1 / 16) * 0.8);
+        ctxt.setFont("'Palatino Linotype', 'Book Antiqua', Palatino, serif", 13);
       }
       const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, body);
       const score = new exsurge.ChantScore(ctxt, mappings, true);

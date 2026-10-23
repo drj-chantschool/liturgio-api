@@ -318,3 +318,20 @@
   border-radius: 3px;
 }
 .ctx-menu-item:hover { background: var(--preview-bg); color: var(--accent); }
+
+/* ── Phone width (must follow the base rules above) ───────────────────── */
+@media (max-width: 760px) {
+  /* Row 1: « ‹ [date] › » Today   Row 2: date text + jurisdiction */
+  #date-bar { padding: 0.35rem 0.6rem; gap: 0.3rem 0.5rem; }
+  #date-nav-controls { flex: 1 1 100%; flex-wrap: nowrap; gap: 0.25rem; }
+  #date-nav-controls button { min-height: 28px; padding: 0.1rem 0.5rem; }
+  #date-nav-controls #nav-today { margin-left: 0.2rem; }
+  #date-input { flex: 1 1 0; min-width: 0; padding: 0.15rem 0.4rem; }
+  #date-display { flex: 1 1 0; min-width: 0; font-size: 0.8rem; }
+  #jurisdiction-picker { font-size: 0; gap: 0; }  /* hide the label text, keep the select */
+  #jurisdiction-select { padding: 0.1rem 0.3rem; }
+  #observance-tabs { padding: 0.35rem 0.6rem; }
+  .observance-tab { padding: 0.25rem 0.55rem; }
+  .observance-tab .tab-title { font-size: 0.78rem; }
+  .observance-tab .tab-rank, .observance-tab .tab-role { font-size: 0.6rem; }
+}
