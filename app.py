@@ -17,10 +17,36 @@ from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Resp
 from pydantic import BaseModel, ValidationError, computed_field, model_validator
 
 import auth
-from gabc_tools.gbchant import extract_gabc_body
-from gabc_tools.tex_text import verses_html
+from gabc_tools.elements import (
+    elements_gabc_body, elements_gabc_header, elements_verses_html, load_elements, to_elements,
+)
 
 app = FastAPI(title="Liturgio Chant Editor")
+
+
+# ── Chant scores ──────────────────────────────────────────────────────────────
+# chants.elements is the one stored form of a score (see gabc_tools.elements);
+# responses keep gabc_body / gabc_header / verses_html, rendered from it here.
+
+def score(elements) -> dict:
+    """gabc_body, gabc_header and verses_html of a chants.elements value."""
+    els = load_elements(elements)
+    return {'gabc_body': elements_gabc_body(els), 'gabc_header': elements_gabc_header(els),
+            'verses_html': elements_verses_html(els)}
+
+
+def gabc_source(elements) -> str:
+    """The editable GABC file of a chant: a local chant's single element verbatim (header
+    and all); otherwise the joined body."""
+    els = load_elements(elements)
+    if len(els) == 1 and els[0][0] == 'gabc':
+        return els[0][1]
+    return elements_gabc_body(els)
+
+
+def elements_json(gabc: str) -> str:
+    """chants.elements for a GABC file typed or pasted into the editor."""
+    return json.dumps(to_elements({'gabc': gabc or ''}), ensure_ascii=False)
 
 # Maps both short codes and full GABC header names → canonical short code
 PART_NORMALIZE = {
@@ -232,6 +258,7 @@ class LatinRef(BaseModel):
     incipit: Optional[str] = None
     gabc_body: str
     verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
+    gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
     mode: Optional[str] = None
     version: Optional[str] = None
     part: Optional[str] = None
@@ -379,6 +406,7 @@ class ChantGroupSummary(BaseModel):
     rep_incipit: Optional[str] = None
     rep_gabc_body: Optional[str] = None
     rep_verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
+    rep_gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
     chant_count: int = 0
 
 
@@ -443,7 +471,7 @@ def list_chants(
     limit: int = Query(500, le=1000),
     offset: int = 0,
 ):
-    conditions = []
+    conditions = ["lc.chant_uuid LIKE 'local:%'"]
     params: dict = {'limit': limit, 'offset': offset}
 
     if q:
@@ -465,11 +493,11 @@ def list_chants(
     where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
 
     sql = text(f"""
-        SELECT lc.local_chant_id, lc.chant_group_id, lc.version, lc.incipit,
+        SELECT SUBSTRING(lc.chant_uuid, 7) AS local_chant_id, lc.chant_group_id, lc.version, lc.incipit,
                lc.office_part AS part, lc.mode, lc.status,
                lc.translation_source_code, lc.is_text_exact,
                cg.canonical_name
-        FROM local_chants lc
+        FROM chants lc
         JOIN chant_group cg ON cg.chant_group_id = lc.chant_group_id
         {where}
         ORDER BY cg.canonical_name, lc.office_part, lc.version
@@ -504,27 +532,25 @@ def get_chant(chant_id: str):
     try:
         with ro().connect() as conn:
             row = conn.execute(text("""
-                SELECT lc.local_chant_id, lc.chant_group_id, lc.version, lc.incipit,
+                SELECT SUBSTRING(lc.chant_uuid, 7) AS local_chant_id, lc.chant_group_id, lc.version, lc.incipit,
                        lc.office_part AS part, lc.mode, lc.status,
                        lc.translation_source_code, lc.is_text_exact,
-                       lc.transcriber, lc.commentary, lc.gabc,
+                       lc.transcriber, lc.commentary, lc.elements,
                        cg.canonical_name
-                FROM local_chants lc
+                FROM chants lc
                 JOIN chant_group cg ON cg.chant_group_id = lc.chant_group_id
-                WHERE lc.local_chant_id = :id
+                WHERE lc.chant_uuid = CONCAT('local:', :id)
             """), {'id': chant_id}).mappings().fetchone()
 
             if not row:
                 raise HTTPException(404, "Chant not found")
 
             latin_rows = conn.execute(text("""
-                SELECT gc.id AS gregobase_id, gc.incipit, gc.gabc, gc.gabc_verses, gc.mode,
-                       gc.version, gc.`office-part` AS part, gc.transcriber,
-                       gc.tex_verses, gc.tex_verses_pdf
-                FROM gregobase_chants gc
-                JOIN gregobase_chant_group_map gcm ON gc.id = gcm.gregobase_id
-                WHERE gcm.chant_group_id = :gid
-                ORDER BY gc.id
+                SELECT CAST(gc.origin_id AS UNSIGNED) AS gregobase_id, gc.incipit, gc.elements, gc.mode,
+                       gc.version, gc.office_part AS part, gc.transcriber
+                FROM chants gc
+                WHERE gc.chant_group_id = :gid AND gc.origin_source = 'GREGOBASE'
+                ORDER BY gregobase_id
             """), {'gid': row['chant_group_id']}).mappings().fetchall()
 
             assign_rows = conn.execute(text("""
@@ -539,13 +565,8 @@ def get_chant(chant_id: str):
                 FROM lit_part_sources lps
                 JOIN service_part sp ON sp.part_id = lps.part_id
                 LEFT JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
-                LEFT JOIN gregobase_chant_group_map gcm
-                       ON lps.chant_uuid LIKE 'gregobase:%%'
-                      AND gcm.gregobase_id = CAST(SUBSTRING(lps.chant_uuid, 11) AS UNSIGNED)
-                LEFT JOIN local_chants lc
-                       ON lps.chant_uuid LIKE 'local:%%'
-                      AND lc.local_chant_id = SUBSTRING(lps.chant_uuid, 7)
-                WHERE COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id) = :gid
+                LEFT JOIN chants ch ON ch.chant_uuid = lps.chant_uuid
+                WHERE COALESCE(lps.chant_group_id, ch.chant_group_id) = :gid
                 ORDER BY sp.display_order, lps.jurisdiction,
                          COALESCE(le.title, le.season, '')
             """), {'gid': row['chant_group_id']}).mappings().fetchall()
@@ -558,8 +579,7 @@ def get_chant(chant_id: str):
         LatinRef(
             gregobase_id=r['gregobase_id'],
             incipit=r['incipit'],
-            gabc_body=extract_gabc_body(r['gabc'] or '', r['gabc_verses']),
-            verses_html=verses_html(r['gabc_verses'], r['tex_verses'], r['tex_verses_pdf']),
+            **score(r['elements']),
             mode=r['mode'],
             version=r['version'],
             part=r['part'],
@@ -602,7 +622,7 @@ def get_chant(chant_id: str):
         is_text_exact=bool(row['is_text_exact']) if row['is_text_exact'] is not None else None,
         transcriber=row['transcriber'],
         commentary=row['commentary'],
-        gabc=row['gabc'],
+        gabc=gabc_source(row['elements']),
         latin_refs=latin_refs,
         assignments=assignments,
     )
@@ -613,14 +633,14 @@ def update_chant(chant_id: str, body: ChantUpdate):
     try:
         with rw().begin() as conn:
             result = conn.execute(text("""
-                UPDATE local_chants
-                SET gabc = :gabc,
+                UPDATE chants
+                SET elements = :elements,
                     status = :status,
                     translation_source_code = :src,
                     is_text_exact = :exact
-                WHERE local_chant_id = :id
+                WHERE chant_uuid = CONCAT('local:', :id)
             """), {
-                'gabc': body.gabc,
+                'elements': elements_json(body.gabc),
                 'status': body.status,
                 'src': body.translation_source_code,
                 'exact': int(body.is_text_exact),
@@ -945,7 +965,7 @@ _DAY_PARTS_SQL = """
             lps.assignment_authority_code, lps.notes, lps.chant_uuid,
             lps.lit_epoch_slug, lps.book,
             COALESCE(lps.assignment_authority_code, '') AS authority_key,
-            COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
+            COALESCE(lps.chant_group_id, ch.chant_group_id) AS chant_group_id,
             CASE WHEN lps.lit_epoch_slug IS NOT NULL THEN 1 ELSE 0 END AS epoch_match,
             anc.depth, anc.src,
             (   (lps.cycle_wkday IS NOT NULL) +
@@ -960,12 +980,7 @@ _DAY_PARTS_SQL = """
          AND lps.jurisdiction IN (:jurisdiction, 'UNIVERSAL')
         LEFT JOIN ancestors anc
           ON anc.slug = lps.lit_epoch_slug
-        LEFT JOIN gregobase_chant_group_map gcm
-               ON lps.chant_uuid LIKE 'gregobase:%'
-              AND gcm.gregobase_id = CAST(SUBSTRING(lps.chant_uuid, 11) AS UNSIGNED)
-        LEFT JOIN local_chants lc
-               ON lps.chant_uuid LIKE 'local:%'
-              AND lc.local_chant_id = SUBSTRING(lps.chant_uuid, 7)
+        LEFT JOIN chants ch ON ch.chant_uuid = lps.chant_uuid
         WHERE (lps.lit_epoch_slug IS NULL OR anc.slug IS NOT NULL)
         -- Week parity ("per hebdomadas I et III" / psalter weeks) applies to
         -- epoch rows too, e.g. TQ Compline, OT-OT daytime hymns.
@@ -1407,6 +1422,19 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                 ORDER BY CASE WHEN pos.jurisdiction = :jur THEN 0 ELSE 1 END
             """), {'m': dt.month, 'd': dt.day, 'jur': jurisdiction}).mappings().fetchall()
 
+            # Movable memorials dated onto this civil date (e.g. the Immaculate
+            # Heart); the weekday keeps the proper_of_seasons row.
+            saint_rows += conn.execute(text("""
+                SELECT mo.slug AS epoch_slug, le.title, le.kind, le.rank_code,
+                       plr.display_name AS rank_display_name, plr.sort_order AS rank_sort,
+                       mo.jurisdiction, NULL AS common_of
+                FROM movable_observance mo
+                JOIN lit_epoch le   ON le.slug        = mo.slug
+                JOIN p_lit_rank plr ON plr.rank_code = le.rank_code
+                WHERE mo.dt = :dt AND mo.jurisdiction IN (:jur, 'UNIVERSAL')
+                ORDER BY CASE WHEN mo.jurisdiction = :jur THEN 0 ELSE 1 END
+            """), {'dt': dt, 'jur': jurisdiction}).mappings().fetchall()
+
             for r in saint_rows:
                 if r['epoch_slug'] in observances:
                     continue
@@ -1532,17 +1560,11 @@ def create_assignment(group_id: int, body: AssignmentCreate):
                 raise HTTPException(404, "Chant group not found")
 
             # Find a representative chant_uuid for this group (gregobase preferred).
-            uuid_row = conn.execute(text("""
-                SELECT CONCAT('gregobase:', MIN(gregobase_id)) AS cu
-                FROM gregobase_chant_group_map WHERE chant_group_id = :gid
-            """), {'gid': group_id}).fetchone()
-            chant_uuid = uuid_row[0] if uuid_row and uuid_row[0] else None
-            if chant_uuid is None:
-                lc_row = conn.execute(text("""
-                    SELECT CONCAT('local:', local_chant_id) AS cu
-                    FROM local_chants WHERE chant_group_id = :gid LIMIT 1
-                """), {'gid': group_id}).fetchone()
-                chant_uuid = lc_row[0] if lc_row else None
+            chant_uuid = conn.execute(text("""
+                SELECT chant_uuid FROM chants WHERE chant_group_id = :gid
+                ORDER BY origin_source <> 'GREGOBASE', CAST(origin_id AS UNSIGNED), chant_uuid
+                LIMIT 1
+            """), {'gid': group_id}).scalar()
 
             result = conn.execute(text("""
                 INSERT INTO lit_part_sources
@@ -1958,6 +1980,23 @@ def _chant_columns(body: ChantUpdate) -> dict:
         'is_text_exact': int(body.is_text_exact),
     }
 
+def _queue_target_row(conn, table: str, pk_col: str, pk_val, cols: list):
+    """The live values of a queue target's columns. The 'local_chants' target is the
+    editor's local chant: the 'local:<id>' row of chants, whose gabc is chants.elements.
+    scripts/apply_queue.py does the same translation when it applies the edit."""
+    if table == 'local_chants':
+        sel = ', '.join('elements' if c == 'gabc' else c for c in cols)
+        row = conn.execute(text(f"SELECT {sel} FROM chants WHERE chant_uuid = :pk"),
+                           {'pk': f'local:{pk_val}'}).mappings().first()
+        if row is None:
+            return None
+        row = dict(row)
+        if 'gabc' in cols:
+            row['gabc'] = gabc_source(row.pop('elements'))
+        return row
+    return conn.execute(text(f"SELECT {', '.join(cols)} FROM {table} WHERE {pk_col} = :pk"),
+                        {'pk': pk_val}).mappings().first()
+
 # table -> (PK column, PK type, request model, model -> {column: value}).
 # The request models are the direct-save bodies (PUT /api/chants/{id},
 # PATCH /api/lit_part_sources/{id}), so the UI sends the same payload either way.
@@ -2053,10 +2092,7 @@ def submit_edit(body: EditSubmit, request: Request):
     cols = list(new)
     try:
         with ro().connect() as conn:
-            row = conn.execute(
-                text(f"SELECT {', '.join(cols)} FROM {body.target_table} WHERE {pk_col} = :pk"),
-                {'pk': pk_val},
-            ).mappings().first()
+            row = _queue_target_row(conn, body.target_table, pk_col, pk_val, cols)
     except Exception as exc:
         raise HTTPException(503, str(exc))
     if row is None:
@@ -2320,67 +2356,33 @@ class ChantUuidResult(BaseModel):
     incipit: Optional[str] = None
     gabc_body: str          # GABC body text ready for exsurge rendering
     verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
+    gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
     mode: Optional[str] = None
     version: Optional[str] = None
 
 
 @app.get("/api/chant_by_uuid", response_model=ChantUuidResult)
 def get_chant_by_uuid(uuid: str):
-    """Return GABC body for a chant referenced by a lit_part_sources.chant_uuid value.
-
-    Accepts 'gregobase:<id>' (resolved from gregobase_chants) or
-    'local:<local_chant_id>' (resolved from local_chants).
-    """
-    if uuid.startswith("gregobase:"):
-        try:
-            gid = int(uuid.split(":", 1)[1])
-        except ValueError:
-            raise HTTPException(400, "Invalid gregobase chant_uuid")
-        try:
-            with ro().connect() as conn:
-                row = conn.execute(text("""
-                    SELECT id, incipit, gabc, gabc_verses, tex_verses, tex_verses_pdf, mode, version
-                    FROM gregobase_chants
-                    WHERE id = :gid
-                """), {'gid': gid}).mappings().fetchone()
-        except Exception as exc:
-            raise HTTPException(503, str(exc))
-        if not row:
-            raise HTTPException(404, f"gregobase chant {gid} not found")
-        return ChantUuidResult(
-            chant_uuid=uuid,
-            incipit=row['incipit'],
-            gabc_body=extract_gabc_body(row['gabc'] or '', row['gabc_verses']),
-            verses_html=verses_html(row['gabc_verses'], row['tex_verses'], row['tex_verses_pdf']),
-            mode=row['mode'],
-            version=row['version'],
-        )
-    elif uuid.startswith("local:"):
-        lid = uuid.split(":", 1)[1]
-        try:
-            with ro().connect() as conn:
-                row = conn.execute(text("""
-                    SELECT local_chant_id, incipit, gabc, mode, version
-                    FROM local_chants
-                    WHERE local_chant_id = :lid
-                """), {'lid': lid}).mappings().fetchone()
-        except Exception as exc:
-            raise HTTPException(503, str(exc))
-        if not row:
-            raise HTTPException(404, f"local chant {lid!r} not found")
-        # local_chants.gabc uses the '%%' separator format (not JSON)
-        gabc = row['gabc'] or ''
-        parts = gabc.split('%%')
-        gabc_body = parts[-1].strip() if len(parts) > 1 else gabc.strip()
-        return ChantUuidResult(
-            chant_uuid=uuid,
-            incipit=row['incipit'],
-            gabc_body=gabc_body,
-            mode=row['mode'],
-            version=row['version'],
-        )
-    else:
+    """Return GABC body for a chant referenced by a lit_part_sources.chant_uuid value
+    ('gregobase:<id>' or 'local:<local_chant_id>'), from chants."""
+    if not uuid.startswith(("gregobase:", "local:")):
         raise HTTPException(400, "chant_uuid must start with 'gregobase:' or 'local:'")
+    try:
+        with ro().connect() as conn:
+            row = conn.execute(text("""
+                SELECT incipit, elements, mode, version FROM chants WHERE chant_uuid = :u
+            """), {'u': uuid}).mappings().fetchone()
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+    if not row:
+        raise HTTPException(404, f"chant {uuid!r} not found")
+    return ChantUuidResult(
+        chant_uuid=uuid,
+        incipit=row['incipit'],
+        **score(row['elements']),
+        mode=row['mode'],
+        version=row['version'],
+    )
 
 
 # ── lit_part_sources as assignment review ──────────────────────────────────────
@@ -2392,7 +2394,7 @@ _LPS_ASSIGN_SELECT = """
            lps.lit_epoch_slug, le.title AS epoch_title,
            lps.wkday, lps.cycle_sun, lps.cycle_wkday, lps.option_num,
            lps.chant_uuid,
-           COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id) AS chant_group_id,
+           COALESCE(lps.chant_group_id, ch.chant_group_id) AS chant_group_id,
            cg.canonical_name AS chant_name,
            lps.review_status, lps.notes,
            sp.part_id, sp.part_code, sp.display_name AS part_name,
@@ -2401,14 +2403,9 @@ _LPS_ASSIGN_SELECT = """
     FROM lit_part_sources lps
     JOIN service_part sp ON sp.part_id = lps.part_id
     LEFT JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
-    LEFT JOIN gregobase_chant_group_map gcm
-           ON lps.chant_uuid LIKE 'gregobase:%%'
-          AND gcm.gregobase_id = CAST(SUBSTRING(lps.chant_uuid, 11) AS UNSIGNED)
-    LEFT JOIN local_chants lc
-           ON lps.chant_uuid LIKE 'local:%%'
-          AND lc.local_chant_id = SUBSTRING(lps.chant_uuid, 7)
+    LEFT JOIN chants ch ON ch.chant_uuid = lps.chant_uuid
     LEFT JOIN chant_group cg
-           ON cg.chant_group_id = COALESCE(lps.chant_group_id, gcm.chant_group_id, lc.chant_group_id)
+           ON cg.chant_group_id = COALESCE(lps.chant_group_id, ch.chant_group_id)
 """
 
 
@@ -2836,19 +2833,18 @@ def list_chants_in_group(group_id: int):
     try:
         with ro().connect() as conn:
             local_rows = conn.execute(text("""
-                SELECT local_chant_id, incipit, gabc, mode, version, status
-                FROM local_chants
-                WHERE chant_group_id = :gid
-                ORDER BY version, local_chant_id
+                SELECT SUBSTRING(chant_uuid, 7) AS local_chant_id, incipit, elements, mode, version, status
+                FROM chants
+                WHERE chant_group_id = :gid AND chant_uuid LIKE 'local:%'
+                ORDER BY version, chant_uuid
             """), {'gid': group_id}).mappings().fetchall()
 
             gb_rows = conn.execute(text("""
-                SELECT gc.id AS gregobase_id, gc.incipit, gc.gabc, gc.gabc_verses,
+                SELECT CAST(gc.origin_id AS UNSIGNED) AS gregobase_id, gc.incipit, gc.elements,
                        gc.mode, gc.version, gc.transcriber
-                FROM gregobase_chants gc
-                JOIN gregobase_chant_group_map gcm ON gc.id = gcm.gregobase_id
-                WHERE gcm.chant_group_id = :gid
-                ORDER BY gc.id
+                FROM chants gc
+                WHERE gc.chant_group_id = :gid AND gc.origin_source = 'GREGOBASE'
+                ORDER BY gregobase_id
             """), {'gid': group_id}).mappings().fetchall()
     except Exception as exc:
         raise HTTPException(503, str(exc))
@@ -2859,7 +2855,7 @@ def list_chants_in_group(group_id: int):
             source='local',
             chant_id=r['local_chant_id'],
             incipit=r['incipit'],
-            gabc=r['gabc'],
+            gabc=gabc_source(r['elements']),
             gabc_is_body=False,
             mode=r['mode'],
             version=r['version'],
@@ -2870,7 +2866,7 @@ def list_chants_in_group(group_id: int):
             source='gregobase',
             chant_id=str(r['gregobase_id']),
             incipit=r['incipit'],
-            gabc=extract_gabc_body(r['gabc'] or '', r['gabc_verses']),
+            gabc=score(r['elements'])['gabc_body'],
             gabc_is_body=True,
             mode=r['mode'],
             version=r['version'],
@@ -2919,12 +2915,13 @@ def get_book_page_image(book: str, printed_page_num: str):
 def get_stats():
     try:
         with ro().connect() as conn:
-            total = conn.execute(text("SELECT COUNT(*) FROM local_chants")).scalar()
+            local = "FROM chants WHERE chant_uuid LIKE 'local:%'"
+            total = conn.execute(text(f"SELECT COUNT(*) {local}")).scalar()
             by_status = conn.execute(text(
-                "SELECT COALESCE(status,'(none)'), COUNT(*) FROM local_chants GROUP BY status"
+                f"SELECT COALESCE(status,'(none)'), COUNT(*) {local} GROUP BY status"
             )).fetchall()
             by_part = conn.execute(text(
-                "SELECT COALESCE(office_part,'(none)'), COUNT(*) FROM local_chants GROUP BY office_part"
+                f"SELECT COALESCE(office_part,'(none)'), COUNT(*) {local} GROUP BY office_part"
             )).fetchall()
     except Exception as exc:
         raise HTTPException(503, str(exc))
@@ -2951,6 +2948,13 @@ def _clean_incipit(s: str) -> str:
     return _RE_WS.sub(' ', s).strip().lower()
 
 
+def _rep_score(rep) -> dict:
+    """rep_gabc_body / rep_verses_html / rep_gabc_header of a group's representative chant."""
+    if not rep:
+        return {'rep_gabc_body': None, 'rep_verses_html': None, 'rep_gabc_header': None}
+    return {f'rep_{k}': v for k, v in score(rep['elements']).items()}
+
+
 @app.get("/api/chant_groups/{group_id}/summary", response_model=ChantGroupSummary)
 def get_chant_group_summary(group_id: int):
     try:
@@ -2963,21 +2967,16 @@ def get_chant_group_summary(group_id: int):
                 raise HTTPException(404, "Chant group not found")
 
             rep = conn.execute(text("""
-                SELECT gc.incipit AS rep_incipit, gc.gabc AS rep_gabc,
-                       gc.gabc_verses, gc.tex_verses, gc.tex_verses_pdf,
-                       gc.`office-part` AS office_part, gc.mode AS mode
-                FROM gregobase_chant_group_map m
-                JOIN gregobase_chants gc ON gc.id = m.gregobase_id
-                WHERE m.chant_group_id = :gid AND gc.gabc IS NOT NULL
-                ORDER BY gc.id LIMIT 1
+                SELECT gc.incipit AS rep_incipit, gc.elements,
+                       gc.office_part, gc.mode AS mode
+                FROM chants gc
+                WHERE gc.chant_group_id = :gid AND gc.origin_source = 'GREGOBASE'
+                  AND JSON_LENGTH(gc.elements) > 0
+                ORDER BY CAST(gc.origin_id AS UNSIGNED) LIMIT 1
             """), {'gid': group_id}).mappings().fetchone()
 
-            gb_count = conn.execute(text(
-                "SELECT COUNT(*) FROM gregobase_chant_group_map WHERE chant_group_id = :gid"
-            ), {'gid': group_id}).scalar() or 0
-
-            lc_count = conn.execute(text(
-                "SELECT COUNT(*) FROM local_chants WHERE chant_group_id = :gid"
+            chant_count = conn.execute(text(
+                "SELECT COUNT(*) FROM chants WHERE chant_group_id = :gid"
             ), {'gid': group_id}).scalar() or 0
     except HTTPException:
         raise
@@ -2993,9 +2992,8 @@ def get_chant_group_summary(group_id: int):
         mode=rep['mode'] if rep else None,
         office_part=PART_NORMALIZE.get((rep['office_part'] or '').lower()) if rep else None,
         rep_incipit=rep['rep_incipit'] if rep else None,
-        rep_gabc_body=extract_gabc_body(rep['rep_gabc'] or '', rep['gabc_verses']) if rep else None,
-        rep_verses_html=verses_html(rep['gabc_verses'], rep['tex_verses'], rep['tex_verses_pdf']) if rep else None,
-        chant_count=gb_count + lc_count,
+        **_rep_score(rep),
+        chant_count=chant_count,
     )
 
 
@@ -3028,19 +3026,17 @@ def _compute_candidates(conn) -> list:
             cg.incipit,
             (
                 SELECT gc.mode
-                FROM gregobase_chant_group_map m
-                JOIN gregobase_chants gc ON gc.id = m.gregobase_id
-                WHERE m.chant_group_id = cg.chant_group_id
+                FROM chants gc
+                WHERE gc.chant_group_id = cg.chant_group_id AND gc.origin_source = 'GREGOBASE'
                   AND gc.mode IS NOT NULL AND gc.mode != ''
-                ORDER BY gc.id LIMIT 1
+                ORDER BY CAST(gc.origin_id AS UNSIGNED) LIMIT 1
             ) AS mode,
             (
-                SELECT gc.`office-part`
-                FROM gregobase_chant_group_map m
-                JOIN gregobase_chants gc ON gc.id = m.gregobase_id
-                WHERE m.chant_group_id = cg.chant_group_id
-                  AND gc.`office-part` IS NOT NULL AND gc.`office-part` != ''
-                ORDER BY gc.id LIMIT 1
+                SELECT gc.office_part
+                FROM chants gc
+                WHERE gc.chant_group_id = cg.chant_group_id AND gc.origin_source = 'GREGOBASE'
+                  AND gc.office_part IS NOT NULL AND gc.office_part != ''
+                ORDER BY CAST(gc.origin_id AS UNSIGNED) LIMIT 1
             ) AS office_part
         FROM chant_group cg
         WHERE cg.incipit IS NOT NULL AND cg.incipit != ''
@@ -3119,12 +3115,11 @@ def get_merge_queue_candidates(
     try:
         with ro().connect() as conn:
             rep_rows = conn.execute(text(f"""
-                SELECT m.chant_group_id, gc.incipit AS rep_incipit, gc.gabc AS rep_gabc,
-                       gc.gabc_verses, gc.tex_verses, gc.tex_verses_pdf
-                FROM gregobase_chant_group_map m
-                JOIN gregobase_chants gc ON gc.id = m.gregobase_id
-                WHERE m.chant_group_id IN ({id_ph}) AND gc.gabc IS NOT NULL
-                ORDER BY m.chant_group_id, gc.id
+                SELECT gc.chant_group_id, gc.incipit AS rep_incipit, gc.elements
+                FROM chants gc
+                WHERE gc.chant_group_id IN ({id_ph}) AND gc.origin_source = 'GREGOBASE'
+                  AND JSON_LENGTH(gc.elements) > 0
+                ORDER BY gc.chant_group_id, CAST(gc.origin_id AS UNSIGNED)
             """), id_params).mappings().fetchall()
             rep_map: dict = {}
             for r in rep_rows:
@@ -3132,12 +3127,8 @@ def get_merge_queue_candidates(
                 if gid not in rep_map:
                     rep_map[gid] = r
 
-            gb_cnt = {r[0]: r[1] for r in conn.execute(text(f"""
-                SELECT chant_group_id, COUNT(*) FROM gregobase_chant_group_map
-                WHERE chant_group_id IN ({id_ph}) GROUP BY chant_group_id
-            """), id_params).fetchall()}
-            lc_cnt = {r[0]: r[1] for r in conn.execute(text(f"""
-                SELECT chant_group_id, COUNT(*) FROM local_chants
+            cnt = {r[0]: r[1] for r in conn.execute(text(f"""
+                SELECT chant_group_id, COUNT(*) FROM chants
                 WHERE chant_group_id IN ({id_ph}) GROUP BY chant_group_id
             """), id_params).fetchall()}
     except Exception as exc:
@@ -3155,9 +3146,8 @@ def get_merge_queue_candidates(
             mode=mode,
             office_part=part,
             rep_incipit=rep['rep_incipit'] if rep else None,
-            rep_gabc_body=extract_gabc_body(rep['rep_gabc'] or '', rep['gabc_verses']) if rep else None,
-            rep_verses_html=verses_html(rep['gabc_verses'], rep['tex_verses'], rep['tex_verses_pdf']) if rep else None,
-            chant_count=gb_cnt.get(gid, 0) + lc_cnt.get(gid, 0),
+            **_rep_score(rep),
+            chant_count=cnt.get(gid, 0),
         )
 
     return [
@@ -3187,36 +3177,11 @@ def merge_chant_groups(body: MergeRequest):
             ), {'gid': merge_id}).fetchone():
                 raise HTTPException(404, f"Chant group {merge_id} not found")
 
-            # Gregobase map entries already in keep group → delete before remapping
-            dup_rows = conn.execute(text("""
-                SELECT m.gregobase_id
-                FROM gregobase_chant_group_map m
-                JOIN gregobase_chant_group_map k
-                  ON k.gregobase_id = m.gregobase_id AND k.chant_group_id = :keep_id
-                WHERE m.chant_group_id = :merge_id
-            """), {'keep_id': keep_id, 'merge_id': merge_id}).fetchall()
-            dup_ids = [r[0] for r in dup_rows]
-
-            if dup_ids:
-                dup_ph = ', '.join(f':d{i}' for i in range(len(dup_ids)))
-                dup_params = {f'd{i}': gid for i, gid in enumerate(dup_ids)}
-                dup_params['merge_id'] = merge_id
+            # Every chant, and every group-level link, moves to the kept group.
+            for tbl in ('chants', 'lit_part_sources', 'chant_indices'):
                 conn.execute(text(f"""
-                    DELETE FROM gregobase_chant_group_map
-                    WHERE chant_group_id = :merge_id AND gregobase_id IN ({dup_ph})
-                """), dup_params)
-
-            conn.execute(text("""
-                UPDATE gregobase_chant_group_map
-                SET chant_group_id = :keep_id WHERE chant_group_id = :merge_id
-            """), {'keep_id': keep_id, 'merge_id': merge_id})
-            conn.execute(text("""
-                UPDATE local_chants
-                SET chant_group_id = :keep_id WHERE chant_group_id = :merge_id
-            """), {'keep_id': keep_id, 'merge_id': merge_id})
-            # lit_part_sources uses chant_uuid (not chant_group_id), so no update
-            # needed here — the gregobase_chant_group_map and local_chants updates
-            # above are sufficient for the JOIN-derived chant_group_id to resolve correctly.
+                    UPDATE {tbl} SET chant_group_id = :keep_id WHERE chant_group_id = :merge_id
+                """), {'keep_id': keep_id, 'merge_id': merge_id})
             conn.execute(text(
                 "DELETE FROM chant_group WHERE chant_group_id = :merge_id"
             ), {'merge_id': merge_id})
@@ -3309,6 +3274,7 @@ class ChantIndexEntry(BaseModel):
     chant_mode: Optional[str] = None
     chant_gabc_body: Optional[str] = None
     chant_verses_html: Optional[str] = None   # tex_verses typeset as HTML, shown under the score
+    chant_gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
 
 
 class ChantIndexEntryUpdate(BaseModel):
@@ -3330,6 +3296,7 @@ class LocalChantSummary(BaseModel):
     mode: Optional[str] = None
     version: Optional[str] = None
     gabc_body: str
+    gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
     status: Optional[str] = None
 
 
@@ -3356,6 +3323,7 @@ class CompositionChant(BaseModel):
     chant_uuid: str
     gabc_body: str
     verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
+    gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
     original_text: Optional[str] = None
     incipit: Optional[str] = None
     mode: Optional[str] = None
@@ -3447,10 +3415,9 @@ class GregobaseChantResult(BaseModel):
 
 
 def _ci_from_row(r, include_gabc: bool = False) -> ChantIndexEntry:
-    gabc_body = verses = None
-    if include_gabc and r['chant_gabc']:
-        gabc_body = extract_gabc_body(r['chant_gabc'], r['chant_gabc_verses'])
-        verses = verses_html(r['chant_gabc_verses'], r['chant_tex_verses'], r['chant_tex_verses_pdf'])
+    sc = {'gabc_body': None, 'verses_html': None, 'gabc_header': None}
+    if include_gabc and r['chant_elements']:
+        sc = score(r['chant_elements'])
     return ChantIndexEntry(
         row_id=r['row_id'],
         book=r['book'],
@@ -3464,42 +3431,29 @@ def _ci_from_row(r, include_gabc: bool = False) -> ChantIndexEntry:
         chant_incipit=r['chant_incipit'],
         chant_version=r['chant_version'],
         chant_mode=str(r['chant_mode']) if r['chant_mode'] is not None else None,
-        chant_gabc_body=gabc_body,
-        chant_verses_html=verses,
+        chant_gabc_body=sc['gabc_body'] or None,
+        chant_verses_html=sc['verses_html'],
+        chant_gabc_header=sc['gabc_header'],
     )
 
 
-# Joins gregobase_chants / local_chants directly rather than via v_chant_item,
-# which inner-joins the chant-group map and so hides ungrouped gregobase chants.
 _CI_SELECT = """
     SELECT ci.row_id, ci.book, ci.id, ci.page, ci.section_type, ci.mode, ci.incipit,
            ci.match_status, ci.chant_uuid,
-           COALESCE(gc.incipit, lc.incipit) AS chant_incipit,
-           COALESCE(gc.version, lc.version) AS chant_version,
-           COALESCE(gc.mode, lc.mode)       AS chant_mode,
-           {gabc}                           AS chant_gabc,
-           {gv}                             AS chant_gabc_verses,
-           {tv}                             AS chant_tex_verses,
-           {tvp}                            AS chant_tex_verses_pdf
+           ch.incipit AS chant_incipit,
+           ch.version AS chant_version,
+           ch.mode    AS chant_mode,
+           {elements} AS chant_elements
     FROM chant_indices ci
-    LEFT JOIN gregobase_chants gc
-           ON ci.chant_uuid LIKE 'gregobase:%'
-          AND gc.id = CAST(SUBSTRING(ci.chant_uuid, 11) AS UNSIGNED)
-    LEFT JOIN local_chants lc
-           ON ci.chant_uuid LIKE 'local:%'
-          AND lc.local_chant_id = SUBSTRING(ci.chant_uuid, 7)
+    LEFT JOIN chants ch ON ch.chant_uuid = ci.chant_uuid
 """
 
 
 def _validate_chant_uuid(conn, chant_uuid: str):
     kind, _, key = chant_uuid.partition(':')
-    if kind == 'gregobase' and key.isdigit():
-        sql = "SELECT 1 FROM gregobase_chants WHERE id = :k"
-    elif kind == 'local' and key:
-        sql = "SELECT 1 FROM local_chants WHERE local_chant_id = :k"
-    else:
+    if not ((kind == 'gregobase' and key.isdigit()) or (kind == 'local' and key)):
         raise HTTPException(400, f"Malformed chant_uuid: {chant_uuid!r}")
-    if not conn.execute(text(sql), {'k': key}).fetchone():
+    if not conn.execute(text("SELECT 1 FROM chants WHERE chant_uuid = :u"), {'u': chant_uuid}).fetchone():
         raise HTTPException(400, f"No such chant: {chant_uuid}")
 
 
@@ -3539,7 +3493,7 @@ def list_chant_index_entries(
         params['q'] = f'%{q.lower()}%'
     where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
     sql = text(f"""
-        {_CI_SELECT.format(gabc='NULL', gv='NULL', tv='NULL', tvp='NULL')}
+        {_CI_SELECT.format(elements='NULL')}
         {where}
         ORDER BY ci.book, ci.section_type, ci.incipit
         LIMIT :limit OFFSET :offset
@@ -3556,8 +3510,7 @@ def list_chant_index_entries(
 def get_chant_index_entry(row_id: int):
     try:
         with ro().connect() as conn:
-            select = _CI_SELECT.format(gabc='COALESCE(gc.gabc, lc.gabc)', gv='gc.gabc_verses',
-                                       tv='gc.tex_verses', tvp='gc.tex_verses_pdf')
+            select = _CI_SELECT.format(elements='ch.elements')
             row = conn.execute(
                 text(f"{select} WHERE ci.row_id = :rid"),
                 {'rid': row_id},
@@ -3607,8 +3560,8 @@ def search_gregobase_chants(
     limit: int = Query(40, le=200),
     offset: int = 0,
 ):
-    # Duplicates are hidden from GregoBase's own listings too.
-    conditions = ["gc.duplicateof IS NULL"]
+    # chants holds no duplicateof rows (hidden from GregoBase's own listings too).
+    conditions = ["gc.origin_source = 'GREGOBASE'"]
     params: dict = {'limit': limit, 'offset': offset}
     if q:
         conditions.append("LOWER(gc.incipit) LIKE :q")
@@ -3617,15 +3570,15 @@ def search_gregobase_chants(
         conditions.append("gc.mode = :mode")
         params['mode'] = mode
     if part:
-        conditions.append("gc.`office-part` = :part")
+        conditions.append("gc.office_part = :part")
         params['part'] = part
     where = ('WHERE ' + ' AND '.join(conditions)) if conditions else ''
     sql = text(f"""
-        SELECT gc.id, gc.incipit, gc.mode, gc.version,
-               gc.`office-part` AS part, gc.transcriber, gc.gabc, gc.gabc_verses
-        FROM gregobase_chants gc
+        SELECT CAST(gc.origin_id AS UNSIGNED) AS id, gc.incipit, gc.mode, gc.version,
+               gc.office_part AS part, gc.transcriber, gc.elements
+        FROM chants gc
         {where}
-        ORDER BY gc.incipit, gc.id
+        ORDER BY gc.incipit, id
         LIMIT :limit OFFSET :offset
     """)
     try:
@@ -3641,7 +3594,7 @@ def search_gregobase_chants(
             version=r['version'],
             part=r['part'],
             transcriber=r['transcriber'],
-            gabc_body=extract_gabc_body(r['gabc'] or '', r['gabc_verses']) if r['gabc'] else None,
+            gabc_body=score(r['elements'])['gabc_body'] or None,
         )
         for r in rows
     ]
@@ -3667,6 +3620,7 @@ class GrIndexBrowseGroup(BaseModel):
     best_mode: Optional[str] = None
     best_gabc_body: Optional[str] = None
     best_verses_html: Optional[str] = None   # tex_verses typeset as HTML, shown under the score
+    best_gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
 
 
 class GregobaseChantEntry(BaseModel):
@@ -3677,17 +3631,18 @@ class GregobaseChantEntry(BaseModel):
     transcriber: Optional[str] = None
     gabc_body: Optional[str] = None
     verses_html: Optional[str] = None   # tex_verses as HTML, shown under the score
+    gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
 
 
 @app.get("/api/gregobase_parts")
 def gregobase_parts():
-    """Return distinct office-part codes that appear in gregobase_chants mapped to a chant group."""
+    """Return distinct office-part codes of the GregoBase chants."""
     sql = text("""
-        SELECT DISTINCT gc.`office-part` AS part
-        FROM gregobase_chants gc
-        JOIN gregobase_chant_group_map gcm ON gcm.gregobase_id = gc.id
-        WHERE gc.`office-part` IS NOT NULL AND gc.`office-part` != ''
-        ORDER BY gc.`office-part`
+        SELECT DISTINCT gc.office_part AS part
+        FROM chants gc
+        WHERE gc.origin_source = 'GREGOBASE'
+          AND gc.office_part IS NOT NULL AND gc.office_part != ''
+        ORDER BY gc.office_part
     """)
     try:
         with ro().connect() as conn:
@@ -3706,9 +3661,8 @@ def gregobase_letters(part: str, prefix: str = ''):
     sql = text(f"""
         SELECT DISTINCT UPPER(LEFT(cg.incipit, {n})) AS letter
         FROM chant_group cg
-        JOIN gregobase_chant_group_map gcm ON gcm.chant_group_id = cg.chant_group_id
-        JOIN gregobase_chants gc ON gc.id = gcm.gregobase_id
-        WHERE gc.`office-part` = :part
+        JOIN chants gc ON gc.chant_group_id = cg.chant_group_id
+        WHERE gc.origin_source = 'GREGOBASE' AND gc.office_part = :part
           AND cg.incipit IS NOT NULL AND cg.incipit != ''
           {prefix_clause}
         ORDER BY letter
@@ -3749,21 +3703,18 @@ def browse_gr_index_groups(
     sql = text(f"""
         SELECT
             cg.chant_group_id, cg.canonical_name, cg.incipit,
-            best_gc.id      AS best_gregobase_id,
+            CAST(best_gc.origin_id AS UNSIGNED) AS best_gregobase_id,
             best_gc.version AS best_version,
             best_gc.mode    AS best_mode,
-            best_gc.gabc    AS best_gabc,
-            best_gc.gabc_verses    AS best_gabc_verses,
-            best_gc.tex_verses     AS best_tex_verses,
-            best_gc.tex_verses_pdf AS best_tex_verses_pdf
+            best_gc.elements AS best_elements
         FROM chant_group cg
-        JOIN gregobase_chants best_gc ON best_gc.id = (
-            SELECT gc2.id
-            FROM gregobase_chant_group_map gcm2
-            JOIN gregobase_chants gc2 ON gc2.id = gcm2.gregobase_id
-            WHERE gcm2.chant_group_id = cg.chant_group_id
-              AND gc2.`office-part` = :part
-            ORDER BY {_VERSION_RANK}, gc2.id
+        JOIN chants best_gc ON best_gc.chant_uuid = (
+            SELECT gc2.chant_uuid
+            FROM chants gc2
+            WHERE gc2.chant_group_id = cg.chant_group_id
+              AND gc2.origin_source = 'GREGOBASE'
+              AND gc2.office_part = :part
+            ORDER BY {_VERSION_RANK}, CAST(gc2.origin_id AS UNSIGNED)
             LIMIT 1
         )
         WHERE 1=1 {letter_clause}
@@ -3783,8 +3734,7 @@ def browse_gr_index_groups(
             best_gregobase_id=r['best_gregobase_id'],
             best_version=r['best_version'],
             best_mode=str(r['best_mode']) if r['best_mode'] is not None else None,
-            best_gabc_body=extract_gabc_body(r['best_gabc'], r['best_gabc_verses']) if r['best_gabc'] else None,
-            best_verses_html=verses_html(r['best_gabc_verses'], r['best_tex_verses'], r['best_tex_verses_pdf']),
+            **{f'best_{k}': v or None for k, v in score(r['best_elements']).items()},
         )
         for r in rows
     ]
@@ -3794,12 +3744,11 @@ def browse_gr_index_groups(
 def gregobase_chants_in_group(group_id: int):
     """Return all gregobase chants for the given chant group, ordered by version preference."""
     sql = text(f"""
-        SELECT gc.id AS gregobase_id, gc.incipit, gc.mode, gc.version, gc.transcriber, gc.gabc, gc.gabc_verses,
-               gc.tex_verses, gc.tex_verses_pdf
-        FROM gregobase_chants gc
-        JOIN gregobase_chant_group_map gcm ON gc.id = gcm.gregobase_id
-        WHERE gcm.chant_group_id = :gid
-        ORDER BY {_VERSION_RANK.replace('gc2.', 'gc.')}, gc.id
+        SELECT CAST(gc.origin_id AS UNSIGNED) AS gregobase_id, gc.incipit, gc.mode, gc.version,
+               gc.transcriber, gc.elements
+        FROM chants gc
+        WHERE gc.chant_group_id = :gid AND gc.origin_source = 'GREGOBASE'
+        ORDER BY {_VERSION_RANK.replace('gc2.', 'gc.')}, gregobase_id
     """)
     try:
         with ro().connect() as conn:
@@ -3813,25 +3762,24 @@ def gregobase_chants_in_group(group_id: int):
             mode=str(r['mode']) if r['mode'] is not None else None,
             version=r['version'],
             transcriber=r['transcriber'],
-            gabc_body=extract_gabc_body(r['gabc'] or '', r['gabc_verses']) if r['gabc'] else None,
-            verses_html=verses_html(r['gabc_verses'], r['tex_verses'], r['tex_verses_pdf']),
+            **{k: v or None for k, v in score(r['elements']).items()},
         )
         for r in rows
     ]
 
 
 # ── Chant browser (/browse) ──────────────────────────────────────────────────
-# GregoBase-style browsing over gregobase_chants ∪ local_chants, one card per
-# chant_group (versions of the same chant collapse together; ungrouped
-# gregobase chants become their own card, keyed 'gb<id>').
+# GregoBase-style browsing over chants, one card per chant_group (versions of
+# the same chant collapse together). Every chant has a group since the chants
+# migration; the 'gb<id>' key for an ungrouped gregobase chant is kept for old links.
 
 _U = "utf8mb4_0900_ai_ci"
 
 def _u(expr: str) -> str:
-    """gregobase_chants is utf8mb3_unicode_ci; fold it to local_chants' collation for the UNION."""
+    """gregobase_chants_texts is utf8mb3_unicode_ci; fold it to chants' collation."""
     return f"CONVERT({expr} USING utf8mb4) COLLATE {_U}"
 
-# local_chants.office_part holds both gregobase codes and full Latin names.
+# chants.office_part holds both gregobase codes and (local chants) full Latin names.
 _LOCAL_PART_NAMES = {
     'introitus': 'in', 'graduale': 'gr', 'alleluia': 'al', 'tractus': 'tr',
     'sequentia': 'se', 'offertorium': 'of', 'communio': 'co', 'antiphona': 'an',
@@ -3871,7 +3819,8 @@ def _browse_ctes(q: str, match: str, part: Optional[str], mode: Optional[str],
     v = every chant version; f = versions passing the filters (with gkey);
     ug = keys of groups with any version assigned in lit_part_sources."""
     text_g = f"{_u('t.text_decode')} AS body" if with_text else "NULL AS body"
-    text_join = "LEFT JOIN gregobase_chants_texts t ON t.id = gc.id" if with_text else ""
+    text_join = ("LEFT JOIN gregobase_chants_texts t ON lc.origin_source = 'GREGOBASE' "
+                 "AND t.id = CAST(lc.origin_id AS UNSIGNED)") if with_text else ""
     conds, params = [], {}
     q = (q or '').strip()
     if q:
@@ -3899,22 +3848,16 @@ def _browse_ctes(q: str, match: str, part: Optional[str], mode: Optional[str],
     where = ('WHERE ' + ' AND '.join(conds)) if conds else ''
     sql = f"""
         WITH v0 AS (
-            SELECT 'gregobase' AS src,
-                   CAST(gc.id AS CHAR) COLLATE {_U} AS cid,
-                   gcm.chant_group_id AS gid,
-                   {_u('gc.incipit')} AS incipit,
-                   {_u('gc.`office-part`')} AS part,
-                   {_mode_sql(_u('gc.mode'))} AS mode,
-                   {_u('gc.version')} AS version,
+            SELECT SUBSTRING_INDEX(lc.chant_uuid, ':', 1) AS src,
+                   SUBSTRING_INDEX(lc.chant_uuid, ':', -1) AS cid,
+                   lc.chant_group_id AS gid,
+                   lc.incipit,
+                   {_LOCAL_PART_SQL} AS part,
+                   {_mode_sql('lc.mode')} AS mode,
+                   lc.version,
                    {text_g}
-            FROM gregobase_chants gc
-            LEFT JOIN gregobase_chant_group_map gcm ON gcm.gregobase_id = gc.id
+            FROM chants lc
             {text_join}
-            WHERE gc.duplicateof IS NULL
-            UNION ALL
-            SELECT 'local', lc.local_chant_id, lc.chant_group_id, lc.incipit,
-                   {_LOCAL_PART_SQL}, {_mode_sql('lc.mode')}, lc.version, NULL
-            FROM local_chants lc
         ),
         v AS (
             SELECT v0.*,
@@ -3985,9 +3928,10 @@ class BrowseVersion(BaseModel):
     version: Optional[str] = None
     transcriber: Optional[str] = None
     commentary: Optional[str] = None
-    status: Optional[str] = None              # local_chants.status
+    status: Optional[str] = None              # chants.status (local chants)
     gabc_body: Optional[str] = None
     verses_html: Optional[str] = None
+    gabc_header: Optional[str] = None   # GABC header (annotation, mode, commentary...), applied by the renderer
     sources: List[BrowseSource] = []
     tags: List[str] = []
 
@@ -4091,35 +4035,28 @@ def browse_group_detail(key: str):
     with each gregobase version's printed sources/tags, and every
     lit_part_sources row that assigns any of them."""
     if key.isdigit():
-        gid, gb_only = int(key), None
+        gid = int(key)
     elif key.startswith('gb') and key[2:].isdigit():
-        gid, gb_only = None, int(key[2:])
+        gid = None   # old link to a then-ungrouped chant: resolved to its group below
     else:
         raise HTTPException(400, "key must be a chant_group_id or 'gb<gregobase id>'")
-    gb_where = "gcm.chant_group_id = :gid" if gid is not None else "gc.id = :gbid"
-    params = {'gid': gid, 'gbid': gb_only}
     versions_sql = text(f"""
         SELECT * FROM (
-            SELECT 'gregobase' AS src, CAST(gc.id AS CHAR) COLLATE {_U} AS cid,
-                   {_u('gc.incipit')} AS incipit, {_u('gc.`office-part`')} AS part,
-                   {_mode_sql(_u('gc.mode'))} AS mode, {_u('gc.version')} AS version,
-                   {_u('gc.transcriber')} AS transcriber, {_u('gc.commentary')} AS commentary,
-                   NULL AS status, gc.gabc, gc.gabc_verses, gc.tex_verses, gc.tex_verses_pdf
-            FROM gregobase_chants gc
-            LEFT JOIN gregobase_chant_group_map gcm ON gcm.gregobase_id = gc.id
-            WHERE gc.duplicateof IS NULL AND {gb_where}
-            UNION ALL
-            SELECT 'local', lc.local_chant_id, lc.incipit, {_LOCAL_PART_SQL}, {_mode_sql('lc.mode')},
-                   lc.version, lc.transcriber, lc.commentary, lc.status,
-                   lc.gabc, NULL, NULL, NULL
-            FROM local_chants lc
+            SELECT SUBSTRING_INDEX(lc.chant_uuid, ':', 1) AS src,
+                   SUBSTRING_INDEX(lc.chant_uuid, ':', -1) AS cid,
+                   lc.incipit, {_LOCAL_PART_SQL} AS part, {_mode_sql('lc.mode')} AS mode,
+                   lc.version, lc.transcriber, lc.commentary, lc.status, lc.elements
+            FROM chants lc
             WHERE lc.chant_group_id = :gid
         ) x
         ORDER BY {_BROWSE_RANK}, src, cid
     """)
     try:
         with ro().connect() as conn:
-            rows = conn.execute(versions_sql, params).mappings().fetchall()
+            if gid is None:
+                gid = conn.execute(text("SELECT chant_group_id FROM chants WHERE chant_uuid = :u"),
+                                   {'u': f'gregobase:{key[2:]}'}).scalar()
+            rows = conn.execute(versions_sql, {'gid': gid}).mappings().fetchall() if gid else []
             if not rows:
                 raise HTTPException(404, f"No chants for browse key {key!r}")
             gb_ids = [int(r['cid']) for r in rows if r['src'] == 'gregobase']
@@ -4159,14 +4096,6 @@ def browse_group_detail(key: str):
     except Exception as exc:
         raise HTTPException(503, str(exc))
 
-    def body(r):
-        if not r['gabc']:
-            return None
-        if r['src'] == 'local':   # local_chants.gabc is a header + '%%' + body file
-            parts = r['gabc'].split('%%')
-            return parts[-1].strip() if len(parts) > 1 else r['gabc'].strip()
-        return extract_gabc_body(r['gabc'], r['gabc_verses'])
-
     return BrowseGroupDetail(
         key=key,
         chant_group_id=gid,
@@ -4178,9 +4107,7 @@ def browse_group_detail(key: str):
                 mode=str(r['mode']) if r['mode'] is not None else None,
                 version=r['version'], transcriber=r['transcriber'],
                 commentary=r['commentary'], status=r['status'],
-                gabc_body=body(r),
-                verses_html=(verses_html(r['gabc_verses'], r['tex_verses'], r['tex_verses_pdf'])
-                             if r['src'] == 'gregobase' else None),
+                **{k: v or None for k, v in score(r['elements']).items()},
                 sources=sources.get(int(r['cid']), []) if r['src'] == 'gregobase' else [],
                 tags=tags.get(int(r['cid']), []) if r['src'] == 'gregobase' else [],
             )
@@ -4192,7 +4119,7 @@ def browse_group_detail(key: str):
 
 @app.post("/api/chant_indices/{row_id}/local_chant", response_model=ChantIndexEntry)
 def create_local_chant_for_index_entry(row_id: int, body: NewLocalChantRequest):
-    """Create a new local_chants row + chant_group from pasted GABC and assign to the entry."""
+    """Create a new local chant (chants row) + chant_group from pasted GABC and assign to the entry."""
     gabc = body.gabc.strip()
     if not gabc:
         raise HTTPException(400, "gabc cannot be empty")
@@ -4224,18 +4151,18 @@ def create_local_chant_for_index_entry(row_id: int, body: NewLocalChantRequest):
             group_id = group_result.lastrowid
 
             conn.execute(text("""
-                INSERT INTO local_chants
-                    (local_chant_id, chant_group_id, incipit, office_part, mode, version, gabc, status)
+                INSERT INTO chants
+                    (chant_uuid, chant_group_id, incipit, office_part, mode, version, elements, status)
                 VALUES
-                    (:lid, :gid, :inc, :part, :mode, :version, :gabc, 'draft')
+                    (:uuid, :gid, :inc, :part, :mode, :version, :elements, 'draft')
             """), {
-                'lid': new_id,
+                'uuid': f'local:{new_id}',
                 'gid': group_id,
                 'inc': incipit,
                 'part': part_code,
                 'mode': mode_val,
                 'version': version,
-                'gabc': gabc,
+                'elements': elements_json(gabc),
             })
 
             conn.execute(text("""
@@ -4251,7 +4178,7 @@ def create_local_chant_for_index_entry(row_id: int, body: NewLocalChantRequest):
 
 @app.post("/api/lit_part_assignments/{text_id}/local_chant", response_model=LitPartAssignmentReview)
 def create_local_chant_for_assignment(text_id: int, body: NewLocalChantRequest):
-    """Create a new local_chants row + chant_group and assign it to the lit_part_sources row."""
+    """Create a new local chant (chants row) + chant_group and assign it to the lit_part_sources row."""
     gabc = body.gabc.strip()
     if not gabc:
         raise HTTPException(400, "gabc cannot be empty")
@@ -4279,13 +4206,13 @@ def create_local_chant_for_assignment(text_id: int, body: NewLocalChantRequest):
             """), {'name': canonical_name, 'inc': incipit})
             group_id = group_result.lastrowid
             conn.execute(text("""
-                INSERT INTO local_chants
-                    (local_chant_id, chant_group_id, incipit, office_part, mode, version, gabc, status)
-                VALUES (:lid, :gid, :inc, :part, :mode, :version, :gabc, 'draft')
+                INSERT INTO chants
+                    (chant_uuid, chant_group_id, incipit, office_part, mode, version, elements, status)
+                VALUES (:uuid, :gid, :inc, :part, :mode, :version, :elements, 'draft')
             """), {
-                'lid': new_id, 'gid': group_id, 'inc': incipit,
+                'uuid': f'local:{new_id}', 'gid': group_id, 'inc': incipit,
                 'part': asgn['part_code'], 'mode': mode_val,
-                'version': version, 'gabc': gabc,
+                'version': version, 'elements': elements_json(gabc),
             })
             conn.execute(text("""
                 UPDATE lit_part_sources SET chant_uuid = :uuid WHERE text_id = :tid
@@ -4692,17 +4619,14 @@ def epoch_composition_data(
                                pts.short_code AS translation_short_code,
                                lps.review_status,
                                lps.cycle_sun, lps.cycle_wkday, lps.wkday,
-                               COALESCE(gc.incipit, lc.incipit) AS opt_incipit,
-                               COALESCE(gc.mode, lc.mode) AS opt_mode
+                               ch.incipit AS opt_incipit,
+                               ch.mode AS opt_mode
                         FROM lit_part_sources lps
                         JOIN service_part sp ON sp.part_id = lps.part_id
                         LEFT JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
                         LEFT JOIN p_translation_source pts
                                ON pts.translation_source_code = lps.translation_source_code
-                        LEFT JOIN gregobase_chants gc
-                               ON lps.chant_uuid = CONCAT('gregobase:', gc.id)
-                        LEFT JOIN local_chants lc
-                               ON lps.chant_uuid = CONCAT('local:', lc.local_chant_id)
+                        LEFT JOIN chants ch ON ch.chant_uuid = lps.chant_uuid
                         LEFT JOIN gregobase_chants_texts gct
                                ON lps.chant_uuid = CONCAT('gregobase:', gct.id)
                         WHERE lps.lit_epoch_slug = :try_slug
@@ -4725,34 +4649,19 @@ def epoch_composition_data(
                         if c_row is None:
                             c_row = c_rows[0]
                         chant_uuid = c_row['chant_uuid']
-                        gabc_body = ''
-                        incipit = mode = version = verses = None
-                        if chant_uuid.startswith('gregobase:'):
-                            gid = int(chant_uuid.split(':', 1)[1])
-                            g = conn.execute(text(
-                                "SELECT incipit, gabc, gabc_verses, tex_verses, tex_verses_pdf, mode, version"
-                                " FROM gregobase_chants WHERE id=:gid"
-                            ), {'gid': gid}).mappings().fetchone()
-                            if g:
-                                gabc_body = extract_gabc_body(g['gabc'] or '', g['gabc_verses'])
-                                verses = verses_html(g['gabc_verses'], g['tex_verses'], g['tex_verses_pdf'])
-                                incipit, mode, version = g['incipit'], g['mode'], g['version']
-                        elif chant_uuid.startswith('local:'):
-                            lid = chant_uuid.split(':', 1)[1]
-                            lc = conn.execute(text(
-                                "SELECT incipit, gabc, mode, version FROM local_chants WHERE local_chant_id=:lid"
-                            ), {'lid': lid}).mappings().fetchone()
-                            if lc:
-                                raw = lc['gabc'] or ''
-                                parts = raw.split('%%')
-                                gabc_body = parts[-1].strip() if len(parts) > 1 else raw.strip()
-                                incipit, mode, version = lc['incipit'], lc['mode'], lc['version']
+                        sc = {'gabc_body': '', 'gabc_header': None, 'verses_html': None}
+                        incipit = mode = version = None
+                        g = conn.execute(text(
+                            "SELECT incipit, elements, mode, version FROM chants WHERE chant_uuid = :u"
+                        ), {'u': chant_uuid}).mappings().fetchone()
+                        if g:
+                            sc = score(g['elements'])
+                            incipit, mode, version = g['incipit'], g['mode'], g['version']
                         composition_chant = CompositionChant(
                             text_id=c_row['text_id'],
                             option_num=c_row['option_num'] or 1,
                             chant_uuid=chant_uuid,
-                            gabc_body=gabc_body,
-                            verses_html=verses,
+                            **sc,
                             original_text=c_row['original_text'],
                             incipit=incipit,
                             mode=mode,
@@ -4777,41 +4686,26 @@ def epoch_composition_data(
             local_chants_in_group: List[LocalChantSummary] = []
             if composition_chant:
                 uuid_val = composition_chant.chant_uuid
-                group_id = None
-                if uuid_val.startswith('gregobase:'):
-                    gid_int = int(uuid_val.split(':', 1)[1])
-                    grp = conn.execute(text(
-                        "SELECT chant_group_id FROM gregobase_chant_group_map WHERE gregobase_id=:gid LIMIT 1"
-                    ), {'gid': gid_int}).mappings().fetchone()
-                    if grp:
-                        group_id = grp['chant_group_id']
-                elif uuid_val.startswith('local:'):
-                    lid_val = uuid_val.split(':', 1)[1]
-                    grp = conn.execute(text(
-                        "SELECT chant_group_id FROM local_chants WHERE local_chant_id=:lid LIMIT 1"
-                    ), {'lid': lid_val}).mappings().fetchone()
-                    if grp:
-                        group_id = grp['chant_group_id']
+                group_id = conn.execute(text(
+                    "SELECT chant_group_id FROM chants WHERE chant_uuid = :u"
+                ), {'u': uuid_val}).scalar()
                 if group_id:
-                    exclude_id = uuid_val.split(':', 1)[1] if uuid_val.startswith('local:') else None
                     lc_rows = conn.execute(text("""
-                        SELECT local_chant_id, incipit, mode, version, gabc, status
-                        FROM local_chants
-                        WHERE chant_group_id = :gid
+                        SELECT SUBSTRING(chant_uuid, 7) AS local_chant_id, incipit, mode, version,
+                               elements, status
+                        FROM chants
+                        WHERE chant_group_id = :gid AND chant_uuid LIKE 'local:%' AND chant_uuid <> :u
                         ORDER BY version, incipit
-                    """), {'gid': group_id}).mappings().fetchall()
+                    """), {'gid': group_id, 'u': uuid_val}).mappings().fetchall()
                     for lc_r in lc_rows:
-                        if exclude_id and lc_r['local_chant_id'] == exclude_id:
-                            continue
-                        raw = lc_r['gabc'] or ''
-                        pts = raw.split('%%')
-                        gabc_b = pts[-1].strip() if len(pts) > 1 else raw.strip()
+                        sc = score(lc_r['elements'])
                         local_chants_in_group.append(LocalChantSummary(
                             local_chant_id=lc_r['local_chant_id'],
                             incipit=lc_r['incipit'],
                             mode=lc_r['mode'],
                             version=lc_r['version'],
-                            gabc_body=gabc_b,
+                            gabc_body=sc['gabc_body'],
+                            gabc_header=sc['gabc_header'],
                             status=lc_r['status'],
                         ))
 
@@ -4903,7 +4797,7 @@ def epoch_composition_data(
 
 @app.post("/api/local_chants", response_model=NewLocalChantResponse)
 def create_local_chant(body: NewLocalChantBody):
-    """Create a new local_chants row. chant_group_mode='new' creates a new chant_group;
+    """Create a new local chant (chants row 'local:<uuid>'). chant_group_mode='new' creates a new chant_group;
     'derived' reuses the chant_group_id from derived_from_uid."""
     gabc = body.gabc.strip()
     if not gabc:
@@ -4931,29 +4825,29 @@ def create_local_chant(body: NewLocalChantBody):
                 if not body.derived_from_uid:
                     raise HTTPException(400, "derived_from_uid required when chant_group_mode='derived'")
                 row = conn.execute(text(
-                    "SELECT chant_group_id FROM v_chant_item WHERE chant_item_uid = :uid"
+                    "SELECT chant_group_id FROM chants WHERE chant_uuid = :uid"
                 ), {'uid': body.derived_from_uid}).fetchone()
                 if not row:
                     raise HTTPException(404, f"Source chant {body.derived_from_uid!r} not found")
                 group_id = row[0]
 
             conn.execute(text("""
-                INSERT INTO local_chants
-                    (local_chant_id, chant_group_id, version, incipit, office_part, mode,
-                     gabc, transcriber, translation_source_code, source_citation, is_text_exact,
+                INSERT INTO chants
+                    (chant_uuid, chant_group_id, version, incipit, office_part, mode,
+                     elements, transcriber, translation_source_code, source_citation, is_text_exact,
                      derived_from_uid, status, commentary)
                 VALUES
-                    (:lid, :gid, :version, :incipit, :part, :mode,
-                     :gabc, :transcriber, :tsrc, :citation, :exact,
+                    (:uuid, :gid, :version, :incipit, :part, :mode,
+                     :elements, :transcriber, :tsrc, :citation, :exact,
                      :derived, :status, :commentary)
             """), {
-                'lid': new_id,
+                'uuid': f'local:{new_id}',
                 'gid': group_id,
                 'version': body.version or 'english',
                 'incipit': incipit,
                 'part': office_part,
                 'mode': mode_val,
-                'gabc': gabc,
+                'elements': elements_json(gabc),
                 'transcriber': transcriber,
                 'tsrc': body.translation_source_code or None,
                 'citation': body.source_citation or None,
@@ -5106,24 +5000,20 @@ def _dashboard_coverage(scope: str):
 
         # ── 7. Preload local-chant resolution data ────────────────────────────
         # chants_set tracks epochs where the assigned chant's group has a
-        # local_chants row (i.e. an in-house English GABC chant exists).
-        #
-        # Resolution: chant_uuid → chant_group_id via v_chant_item (handles
-        # both 'gregobase:<id>' and future 'local:<uuid>' formats uniformly).
+        # local chant (i.e. an in-house English GABC chant exists).
         local_chant_groups: set[int] = {
             r[0] for r in conn.execute(text(
-                "SELECT DISTINCT chant_group_id FROM local_chants"
+                "SELECT DISTINCT chant_group_id FROM chants WHERE chant_uuid LIKE 'local:%'"
             )).fetchall()
         }
         # Map every chant_uuid that appears in lps to its chant_group_id
         uuid_to_group: dict[str, int] = {
-            r.chant_item_uid: r.chant_group_id
+            r.chant_uuid: r.chant_group_id
             for r in conn.execute(text(
-                "SELECT DISTINCT vci.chant_item_uid, vci.chant_group_id"
-                " FROM v_chant_item vci"
+                "SELECT DISTINCT ch.chant_uuid, ch.chant_group_id"
+                " FROM chants ch"
                 " JOIN lit_part_sources lps"
-                "   ON lps.chant_uuid = vci.chant_item_uid"
-                " WHERE lps.chant_uuid IS NOT NULL"
+                "   ON lps.chant_uuid = ch.chant_uuid"
             )).fetchall()
         }
 

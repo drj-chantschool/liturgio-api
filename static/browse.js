@@ -1,7 +1,7 @@
 'use strict';
 
 // ── Chant Browser ─────────────────────────────────────────────────────────────
-// GregoBase-style browsing over gregobase_chants ∪ local_chants, one row per
+// GregoBase-style browsing over the chants table, one row per
 // chant group. Filters: typed incipit prefix (or words-in-text), office-part,
 // mode, "assigned in Liturgio". Facet chips come from /api/browse/facets, so
 // every part/mode in the DB shows, with counts for the other active filters.
@@ -341,7 +341,7 @@ function renderDetail(li, d) {
 function drawScores(det, d) {
   det.querySelectorAll('.cb-score').forEach(el => {
     const v = d.versions.find(x => x.chant_uuid === el.dataset.uuid);
-    renderGabc(v.gabc_body, el, v.verses_html);
+    renderGabc(v.gabc_body, el, v.verses_html, v.gabc_header);
   });
 }
 

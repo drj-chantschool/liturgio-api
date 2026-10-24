@@ -186,7 +186,7 @@ function renderAssignment(detail) {
     (detail.chant_incipit ? ` — ${detail.chant_incipit}` : '') +
     (detail.chant_mode    ? ` · mode ${detail.chant_mode}` : '') +
     (detail.chant_version ? ` · ${detail.chant_version}` : '');
-  renderGabc(detail.chant_gabc_body, griAssignEngrav, detail.chant_verses_html);
+  renderGabc(detail.chant_gabc_body, griAssignEngrav, detail.chant_verses_html, detail.chant_gabc_header);
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────

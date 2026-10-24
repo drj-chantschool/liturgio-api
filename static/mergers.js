@@ -264,8 +264,8 @@ function buildCard(pair, isManual = false) {
 
   // Render GABC after the card is in the DOM
   requestAnimationFrame(() => {
-    renderGabc(ga.rep_gabc_body, panelA.querySelector('.mgp-gabc'), ga.rep_verses_html);
-    renderGabc(gb.rep_gabc_body, panelB.querySelector('.mgp-gabc'), gb.rep_verses_html);
+    renderGabc(ga.rep_gabc_body, panelA.querySelector('.mgp-gabc'), ga.rep_verses_html, ga.rep_gabc_header);
+    renderGabc(gb.rep_gabc_body, panelB.querySelector('.mgp-gabc'), gb.rep_verses_html, gb.rep_gabc_header);
   });
 
   return card;

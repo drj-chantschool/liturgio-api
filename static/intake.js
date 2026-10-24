@@ -287,7 +287,7 @@ function renderChants() {
       .then(r => {
         card.querySelector('.iq-chant-info').textContent =
           [r.incipit, r.mode ? `mode ${r.mode}` : null, r.version].filter(Boolean).join(' · ');
-        renderGabc(r.gabc_body, score, r.verses_html);
+        renderGabc(r.gabc_body, score, r.verses_html, r.gabc_header);
       })
       .catch(e => { score.innerHTML = `<em class="render-note error">${escapeHtml(e.message)}</em>`; });
   }

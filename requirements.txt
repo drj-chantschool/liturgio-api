@@ -4,4 +4,4 @@ sqlalchemy
 mysql-connector-python
 keyring
 boto3
-gabc-tools @ git+https://github.com/drj-chantschool/gabc-tools.git@5e9a7e1
+gabc-tools @ git+https://github.com/drj-chantschool/gabc-tools.git@39bccc8

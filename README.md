@@ -1,13 +1,15 @@
 # liturgio-api
 
 A small FastAPI + vanilla-JS web UI for browsing and editing English GABC
-chant adaptations in the `liturgio` MySQL database (`local_chants`,
-`chant_group`, `gregobase_chants`, `lit_part_assignment`).
+chant adaptations in the `liturgio` MySQL database (`chants`,
+`chant_group`, `lit_part_sources`). Scores are stored as element lists
+(`chants.elements`) and rendered to `gabc_body` / `gabc_header` /
+`verses_html` by `gabc_tools.elements`.
 
 ## Contents
 
 - `app.py` — FastAPI backend:
-  - `GET /api/chants` — search/filter `local_chants` (by incipit/canonical
+  - `GET /api/chants` — search/filter the local chants (by incipit/canonical
     name, status, part)
   - `GET /api/chants/{chant_id}` — full chant detail, including Latin
     GregoBase references (`latin_refs`) and liturgical-day assignments
@@ -32,9 +34,9 @@ chant adaptations in the `liturgio` MySQL database (`local_chants`,
     pip install -r requirements.txt
 
 Depends on [`gabc-tools`](https://github.com/drj-chantschool/gabc-tools)
-for `extract_gabc_body()` (used to pull the notation body out of
-`gregobase_chants.gabc`, which may be JSON-wrapped or plain
-`header\n%%\nbody` text).
+for `gabc_tools.elements` (renders a `chants.elements` list into the
+`gabc_body` / `gabc_header` / `verses_html` the API returns). It needs a
+gabc-tools that has `elements.py`.
 
 The `liturgio` schema itself (DDL + ER diagram) and the CLI/loaders that
 populate it live in

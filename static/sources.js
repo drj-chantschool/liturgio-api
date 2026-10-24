@@ -182,7 +182,7 @@ async function loadChantEngraving(s) {
     const parts = [chant.incipit, chant.mode ? `mode ${chant.mode}` : null, chant.version]
       .filter(Boolean).join(' · ');
     seChantMeta.textContent = parts || s.chant_uuid;
-    renderGabc(chant.gabc_body, seChantPreview, chant.verses_html);
+    renderGabc(chant.gabc_body, seChantPreview, chant.verses_html, chant.gabc_header);
   } catch (e) {
     seChantPreview.innerHTML = `<em class="render-note">Error: ${escapeHtml(e.message)}</em>`;
   }

@@ -398,7 +398,7 @@ async function loadChantNotation(uuid, container) {
       _chantCache.set(uuid, chant);
     }
     container.innerHTML = '';
-    renderGabc(chant.gabc_body, container, chant.verses_html);
+    renderGabc(chant.gabc_body, container, chant.verses_html, chant.gabc_header);
   } catch (err) {
     container.innerHTML = `<em class="render-note error">${escHtml(err.message)}</em>`;
   }

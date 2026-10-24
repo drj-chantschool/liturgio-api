@@ -301,7 +301,7 @@ function renderLatinRefs(refs) {
 
     const previewEl = div.querySelector('.latin-ref-preview');
     if (ref.gabc_body) {
-      renderGabc(ref.gabc_body, previewEl, ref.verses_html);
+      renderGabc(ref.gabc_body, previewEl, ref.verses_html, ref.gabc_header);
     } else {
       previewEl.innerHTML = '<em class="render-note">No GABC available</em>';
     }
@@ -318,7 +318,7 @@ latinSection.addEventListener('toggle', () => {
   const previews = latinRefs.querySelectorAll('.latin-ref-preview');
   state.selected.latin_refs.forEach((ref, i) => {
     if (previews[i] && ref.gabc_body) {
-      renderGabc(ref.gabc_body, previews[i], ref.verses_html);
+      renderGabc(ref.gabc_body, previews[i], ref.verses_html, ref.gabc_header);
     }
   });
 });

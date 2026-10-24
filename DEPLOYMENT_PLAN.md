@@ -153,7 +153,8 @@ Run on the admin machine only:
 
 Safety checks, enforced by the script and never taken from the queue row:
 - **Allowlist** (`ALLOWLIST` in the script, mirroring the API's `_QUEUE_TARGETS`):
-  `local_chants` {gabc, status, translation_source_code, is_text_exact} and
+  `local_chants` {gabc, status, translation_source_code, is_text_exact} (a logical
+  target since 2026-10-23: the `local:<id>` row of `chants`, gabc stored as `elements`) and
   `lit_part_sources` {review_status, jurisdiction, option_num, original_text,
   vernacular_text, text_src, part_id, lit_epoch_slug, wkday, bbox, notes,
   chant_uuid}, with value types and nullability. Anything else (`app_user`,

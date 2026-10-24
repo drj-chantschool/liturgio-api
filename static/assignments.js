@@ -831,7 +831,7 @@ function renderWorkflow(data) {
       cwChantFoundAt.textContent = '';
     }
     if (c.gabc_body) {
-      renderGabc(c.gabc_body, cwChantEngrav, c.verses_html);
+      renderGabc(c.gabc_body, cwChantEngrav, c.verses_html, c.gabc_header);
     } else {
       cwChantEngrav.innerHTML = '<em class="render-note">No GABC</em>';
     }
@@ -870,7 +870,7 @@ function renderWorkflow(data) {
       item.appendChild(engrav);
       cwLocalChants.appendChild(item);
       if (lc.gabc_body) {
-        renderGabc(lc.gabc_body, engrav);
+        renderGabc(lc.gabc_body, engrav, null, lc.gabc_header);
       } else {
         engrav.innerHTML = '<em class="render-note">No GABC</em>';
       }

@@ -166,7 +166,8 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
     if (st.selected !== g) return;  // user clicked another group meanwhile
     if (!chants.length && g.best_gregobase_id) {
       chants = [{ gregobase_id: g.best_gregobase_id, mode: g.best_mode,
-        version: g.best_version, gabc_body: g.best_gabc_body, verses_html: g.best_verses_html }];
+        version: g.best_version, gabc_body: g.best_gabc_body, verses_html: g.best_verses_html,
+        gabc_header: g.best_gabc_header }];
     }
     st.chants = chants;
     renderChantList();
@@ -197,7 +198,7 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
       li.classList.toggle('active', li.dataset.gbid == c.gregobase_id);
     });
     engravEl.innerHTML = '';
-    if (c.gabc_body) renderGabc(c.gabc_body, engravEl, c.verses_html);
+    if (c.gabc_body) renderGabc(c.gabc_body, engravEl, c.verses_html, c.gabc_header);
     else engravEl.innerHTML = '<em class="render-note">No GABC</em>';
     actionsEl.hidden = false;
   }
@@ -313,8 +314,8 @@ function createNewChantPanel({ panel, onSave }) {
   closeBtn.addEventListener('click', hide);
 
   previewBtn.addEventListener('click', () => {
-    const body = extractGabcBody(gabcEl.value.trim());
-    if (body) renderGabc(body, previewEl);
+    const gabc = gabcEl.value.trim();
+    if (hasGabcBody(gabc)) renderGabc(gabc, previewEl);
     else previewEl.innerHTML = '<em class="render-note">No GABC to preview</em>';
   });
 
