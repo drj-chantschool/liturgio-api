@@ -683,6 +683,11 @@ function renderParts(parts) {
 // Shorten "13th Sunday of Ordinary Time" → "13th Sun", "Wednesday of..." → "Wed"
 function shortEpochTitle(title) {
   if (!title) return '';
+  // Sibling Masses of one day ("Holy Thursday — Chrism Mass", "Christmas — Mass
+  // at Dawn") share their leading words; only the part after the dash tells
+  // their chips apart.
+  const dash = title.indexOf(' — ');
+  if (dash > 0) return title.slice(dash + 3);
   const m = title.match(/^(Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)/);
   if (m) return m[1].slice(0, 3);
   const m2 = title.match(/^(\d+\w+)\s+(Sunday|Monday)/);
