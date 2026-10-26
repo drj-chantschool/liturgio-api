@@ -88,7 +88,10 @@ function renderGabc(gabc, container, versesHtml, header) {
       applyChantStyle(ctxt);
       const mappings = exsurge.Gabc.createMappingsFromSource(ctxt, full);
       const score = new exsurge.ChantScore(ctxt, mappings, true);
-      exsurge.Gabc.applyHeader(score, ctxt, new exsurge.GabcHeader(full));
+      // A stale cached page can still load the pre-fork exsurge (no applyHeader); render without header settings then
+      if (typeof exsurge.Gabc.applyHeader === 'function') {
+        exsurge.Gabc.applyHeader(score, ctxt, new exsurge.GabcHeader(full));
+      }
       score.performLayout(ctxt);
       score.layoutChantLines(ctxt, w, () => {
         try {
