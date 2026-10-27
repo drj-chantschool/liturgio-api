@@ -4249,6 +4249,7 @@ def epoch_composition_parts(slug: str, chant_source: Optional[str] = None):
             part_rows = conn.execute(text(f"""
                 SELECT lps.lit_epoch_slug, le.title AS epoch_title,
                        sp.service_code, sp.part_code, sp.display_name AS part_name,
+                       sp.display_order,
                        lps.cycle_sun, lps.cycle_wkday, lps.wkday
                 FROM lit_part_sources lps
                 JOIN service_part sp ON sp.part_id = lps.part_id
@@ -4259,6 +4260,17 @@ def epoch_composition_parts(slug: str, chant_source: Optional[str] = None):
                          lps.cycle_sun, lps.cycle_wkday, lps.wkday
                 ORDER BY sp.display_order, le.sort_order, lps.lit_epoch_slug, lps.wkday
             """), in_params).mappings().fetchall()
+
+            # Subservices (Palms, Candles, Ashes, Washing of Feet) get no tab:
+            # fold them into their parent service as Day View does.
+            subservices = _subservices(conn)
+
+            def _fold(r):
+                parent, at = subservices.get(r["service_code"], (r["service_code"], None))
+                if r["service_code"] in subservices and at is None:
+                    at = float('inf')
+                return parent, (at if r["service_code"] in subservices else r["display_order"])
+            part_rows = sorted(part_rows, key=lambda r: (_service_rank(_fold(r)[0]), _fold(r)[1]))
 
             page_rows = []
             if chant_source:
@@ -4285,7 +4297,7 @@ def epoch_composition_parts(slug: str, chant_source: Optional[str] = None):
     return {
         "epoch": dict(epoch_row),
         "parts": [{"epoch_slug": r["lit_epoch_slug"], "epoch_title": r["epoch_title"],
-                    "service_code": r["service_code"],
+                    "service_code": subservices.get(r["service_code"], (r["service_code"],))[0],
                     "part_code": r["part_code"], "part_name": r["part_name"],
                     "cycle_sun": r["cycle_sun"], "cycle_wkday": r["cycle_wkday"],
                     "cycle": _cycle_str(r["cycle_sun"], r["cycle_wkday"]),
