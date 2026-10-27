@@ -253,13 +253,13 @@ const browser = createGregobaseBrowser({
   },
 });
 
-// Pre-select part and first letter from the selected index entry
+// Pre-select part and seed the incipit box (first word) from the selected index entry
 griBtnBrowse.addEventListener('click', () => {
   hidePanels();
   const e = state.selected;
   browser.open({
     part: SECTION_TO_PART[e?.section_type] || 'in',
-    letter: (e?.incipit || '').trim()[0]?.toUpperCase(),
+    incipit: (e?.incipit || '').trim().split(/\s+/)[0] || '',
   });
 });
 

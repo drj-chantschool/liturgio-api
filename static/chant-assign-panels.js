@@ -1,8 +1,8 @@
 'use strict';
 
-// Shared chant-assignment panels used by Source Review and GR Index.
+// Shared chant-assignment panels used by Source Review and Index Review.
 
-// "Browse gregobase…" panel: part / letter (/ 2nd letter) → chant group
+// "Browse gregobase…" panel: part + typed incipit prefix → chant group
 // → individual gregobase chant within the group → Assign.
 //
 // Usage:
@@ -13,7 +13,7 @@
 //     onAssign: async gregobaseId => { ... },    // throw to show an error
 //   });
 //   await browser.init();                        // loads part list
-//   browser.open({ part: 'in', letter: 'A' });   // both optional
+//   browser.open({ part: 'in', incipit: 'Ad te' });   // both optional
 //   browser.hide();
 function createGregobaseBrowser({ panel, api, onAssign }) {
   panel.innerHTML = `
@@ -22,11 +22,8 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
       <label>Part
         <select id="gri-browse-part"></select>
       </label>
-      <label>Letter
-        <select id="gri-browse-letter"></select>
-      </label>
-      <label id="gri-browse-letter2-wrap" hidden>2nd
-        <select id="gri-browse-letter2"></select>
+      <label>Incipit
+        <input type="search" id="gri-browse-q" placeholder="Start of incipit — e.g. Ad te lev" autocomplete="off">
       </label>
       <span id="gri-browse-msg"></span>
       <button id="gri-browse-close-btn" class="btn-secondary btn-sm" style="margin-left:auto">Close</button>
@@ -47,9 +44,7 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
 
   const q = id => panel.querySelector('#' + id);
   const partSel       = q('gri-browse-part');
-  const letterSel     = q('gri-browse-letter');
-  const letter2Wrap   = q('gri-browse-letter2-wrap');
-  const letter2Sel    = q('gri-browse-letter2');
+  const qInput        = q('gri-browse-q');
   const closeBtn      = q('gri-browse-close-btn');
   const msgEl         = q('gri-browse-msg');
   const listEl        = q('gri-browse-list');
@@ -60,7 +55,7 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
   const actionsEl     = q('gri-browse-detail-actions');
   const assignBtn     = q('gri-browse-assign-btn');
 
-  const st = { groups: [], selected: null, chants: [], selectedChant: null };
+  const st = { seq: 0, groups: [], selected: null, chants: [], selectedChant: null };
 
   const esc = s => (s == null ? '' : String(s).replace(/[&<>"']/g, c =>
     ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])));
@@ -80,51 +75,29 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
   async function loadParts() {
     try {
       fillSelect(partSel, await api('/api/gregobase_parts'));
-      await loadLetters();
     } catch (_) {}
-  }
-
-  async function loadLetters() {
-    const part = partSel.value;
-    if (!part) return;
-    try {
-      fillSelect(letterSel, await api('/api/gregobase_letters?part=' + encodeURIComponent(part)));
-    } catch (_) {}
-    await loadLetter2();
-  }
-
-  async function loadLetter2() {
-    const part = partSel.value;
-    const letter = letterSel.value;
-    if (!part || !letter) { letter2Wrap.hidden = true; return; }
-    try {
-      const sub = await api('/api/gregobase_letters?part=' + encodeURIComponent(part) +
-                            '&prefix=' + encodeURIComponent(letter));
-      if (sub.length > 1) {
-        fillSelect(letter2Sel, sub);
-        letter2Wrap.hidden = false;
-      } else {
-        letter2Wrap.hidden = true;
-      }
-    } catch (_) { letter2Wrap.hidden = true; }
   }
 
   async function runLoad() {
     const part = partSel.value;
-    const prefix = letter2Wrap.hidden ? letterSel.value : letter2Sel.value;
-    if (!part || !prefix) return;
+    const prefix = qInput.value.trim();
+    if (!part) return;
+    const seq = ++st.seq;
     msgEl.textContent = 'Loading…';
     listEl.innerHTML = '';
     clearDetail();
     st.groups = [];
     st.selected = null;
     try {
-      const p = new URLSearchParams({ part, prefix, limit: '300' });
-      st.groups = await api('/api/gr_index_browse?' + p.toString());
+      const p = new URLSearchParams({ part, limit: '300' });
+      if (prefix) p.set('prefix', prefix);
+      const groups = await api('/api/gr_index_browse?' + p.toString());
+      if (seq !== st.seq) return;   // a newer keystroke superseded this load
+      st.groups = groups;
       msgEl.textContent = `${st.groups.length} group(s)`;
       renderList();
     } catch (e) {
-      msgEl.textContent = 'Error: ' + e.message;
+      if (seq === st.seq) msgEl.textContent = 'Error: ' + e.message;
     }
   }
 
@@ -215,22 +188,19 @@ function createGregobaseBrowser({ panel, api, onAssign }) {
 
   function hide() { panel.hidden = true; }
 
-  // Show the panel, optionally pre-selecting a part and first letter.
-  async function open({ part, letter } = {}) {
+  // Show the panel, optionally pre-selecting a part and seeding the incipit box.
+  async function open({ part, incipit } = {}) {
     panel.hidden = false;
     if (part && [...partSel.options].some(o => o.value === part)) partSel.value = part;
-    await loadLetters();
-    if (letter && [...letterSel.options].some(o => o.value === letter)) {
-      letterSel.value = letter;
-      await loadLetter2();
-    }
+    if (incipit != null) qInput.value = incipit;
     runLoad();
+    qInput.focus();
   }
 
   closeBtn.addEventListener('click', hide);
-  partSel.addEventListener('change', async () => { await loadLetters(); runLoad(); });
-  letterSel.addEventListener('change', async () => { await loadLetter2(); runLoad(); });
-  letter2Sel.addEventListener('change', runLoad);
+  partSel.addEventListener('change', runLoad);
+  let qTimer = null;
+  qInput.addEventListener('input', () => { clearTimeout(qTimer); qTimer = setTimeout(runLoad, 250); });
 
   assignBtn.addEventListener('click', async () => {
     if (!st.selectedChant) return;

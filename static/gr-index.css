@@ -147,7 +147,8 @@
   font-size: 0.78rem;
   color: var(--text-muted);
 }
-#gri-browse-controls select {
+#gri-browse-controls select,
+#gri-browse-controls input {
   background: var(--bg);
   border: 1px solid var(--border);
   border-radius: 3px;
@@ -157,7 +158,9 @@
   color: var(--text);
   outline: none;
 }
-#gri-browse-controls select:focus { border-color: var(--accent-lt); }
+#gri-browse-controls input { width: 15rem; }
+#gri-browse-controls select:focus,
+#gri-browse-controls input:focus { border-color: var(--accent-lt); }
 #gri-browse-msg {
   font-size: 0.75rem;
   color: var(--text-muted);

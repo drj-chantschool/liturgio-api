@@ -3692,13 +3692,13 @@ def browse_gr_index_groups(
     For each group returns the best-version gregobase chant
     (Solesmes 1974 > 1961 > Solesmes > Vatican > rest).
     """
-    pfx = (prefix or letter).upper()
+    pfx = (prefix or letter).strip()
     params: dict = {'part': part, 'limit': limit, 'offset': offset}
     letter_clause = ""
     if pfx:
-        letter_clause = "AND UPPER(LEFT(COALESCE(cg.incipit, ''), :plen)) = :prefix"
-        params['prefix'] = pfx
-        params['plen'] = len(pfx)
+        # Same LIKE-prefix match as the Chant Browser (collation folds case/accents)
+        letter_clause = "AND cg.incipit LIKE :prefix"
+        params['prefix'] = f'{_like_escape(pfx)}%'
 
     sql = text(f"""
         SELECT
