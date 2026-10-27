@@ -4270,7 +4270,11 @@ def epoch_composition_parts(slug: str, chant_source: Optional[str] = None):
                 if r["service_code"] in subservices and at is None:
                     at = float('inf')
                 return parent, (at if r["service_code"] in subservices else r["display_order"])
-            part_rows = sorted(part_rows, key=lambda r: (_service_rank(_fold(r)[0]), _fold(r)[1]))
+            # Same key as _order_services: tab order, position, own parts before
+            # folded-in subservice parts; the SQL order (display_order, epoch,
+            # wkday) breaks the remaining ties.
+            part_rows = sorted(part_rows, key=lambda r: (
+                _service_rank(_fold(r)[0]), _fold(r)[1], r["service_code"] in subservices))
 
             page_rows = []
             if chant_source:
