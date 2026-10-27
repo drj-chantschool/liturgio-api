@@ -4248,13 +4248,13 @@ def epoch_composition_parts(slug: str, chant_source: Optional[str] = None):
             # composition_data, since option numbering is independent across sources.
             part_rows = conn.execute(text(f"""
                 SELECT lps.lit_epoch_slug, le.title AS epoch_title,
-                       sp.part_code, sp.display_name AS part_name,
+                       sp.service_code, sp.part_code, sp.display_name AS part_name,
                        lps.cycle_sun, lps.cycle_wkday, lps.wkday
                 FROM lit_part_sources lps
                 JOIN service_part sp ON sp.part_id = lps.part_id
                 JOIN lit_epoch le ON le.slug = lps.lit_epoch_slug
                 WHERE lps.lit_epoch_slug IN ({in_ph})
-                GROUP BY lps.lit_epoch_slug, le.title, sp.part_code,
+                GROUP BY lps.lit_epoch_slug, le.title, sp.service_code, sp.part_code,
                          sp.display_name, sp.display_order, le.sort_order,
                          lps.cycle_sun, lps.cycle_wkday, lps.wkday
                 ORDER BY sp.display_order, le.sort_order, lps.lit_epoch_slug, lps.wkday
@@ -4285,6 +4285,7 @@ def epoch_composition_parts(slug: str, chant_source: Optional[str] = None):
     return {
         "epoch": dict(epoch_row),
         "parts": [{"epoch_slug": r["lit_epoch_slug"], "epoch_title": r["epoch_title"],
+                    "service_code": r["service_code"],
                     "part_code": r["part_code"], "part_name": r["part_name"],
                     "cycle_sun": r["cycle_sun"], "cycle_wkday": r["cycle_wkday"],
                     "cycle": _cycle_str(r["cycle_sun"], r["cycle_wkday"]),

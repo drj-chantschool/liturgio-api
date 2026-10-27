@@ -599,6 +599,7 @@ async function selectEpoch(slug) {
   editor.hidden = false;
   srcTitle.textContent = 'Loading…';
   partChips.innerHTML = '';
+  $('part-service-tabs').hidden = true;
   composeWorkflow.hidden = true;
   composePanel.hidden = true;
   sectionImagesCol.hidden = true;
@@ -637,10 +638,49 @@ function chipKey(epochSlug, partCode, cycleSun, cycleWkday, wkday) {
   return `${epochSlug}||${partCode}||${cycleSun ?? ''}||${cycleWkday ?? ''}||${wkday ?? ''}`;
 }
 
-function renderParts(parts) {
+const SERVICE_LABELS = {
+  VESPERS1: 'I Vespers', VIGIL: 'Vigil', INVITATORY: 'Invitatory', OFFREAD: 'Matins',
+  VIGILS: 'Vigil Office', LAUDS: 'Lauds', TERCE: 'Terce', MASS: 'Mass', SEXT: 'Sext',
+  MIDDAY: 'Hor. Med.', NONE: 'None', VESPERS: 'Vespers', COMPLINE: 'Compline',
+  ASHES: 'Distribution of Ashes', PALMS: 'Blessing and Procession of Palms',
+  CANDLES: 'Blessing of Candles', GOODFRIDAY: 'Good Friday Liturgy', LOTIO: 'Washing of Feet',
+};
+
+function renderParts(parts, allParts) {
   partChips.innerHTML = '';
 
-  if (!parts || parts.length === 0) {
+  if (!allParts) {
+    state.parts = parts || [];
+    allParts = state.parts;
+    const tabsEl = $('part-service-tabs');
+    tabsEl.innerHTML = '';
+    // One tab per service, in the order the API lists them (by part display_order).
+    const codes = [...new Set(allParts.map(p => p.service_code).filter(Boolean))];
+    tabsEl.hidden = codes.length < 2;
+    if (!codes.includes(state.activeService)) {
+      const sel = allParts.find(p => p.part_code === state.selectedPart
+                                     && p.epoch_slug === state.selectedPartEpoch);
+      state.activeService = (sel && sel.service_code) || codes[0] || null;
+    }
+    const hasVespers1 = codes.includes('VESPERS1');
+    for (const code of codes) {
+      const b = document.createElement('button');
+      b.type = 'button';
+      b.className = 'service-tab' + (code === state.activeService ? ' active' : '');
+      b.dataset.service = code;
+      b.textContent = (code === 'VESPERS' && hasVespers1) ? 'II Vespers' : (SERVICE_LABELS[code] || code);
+      b.addEventListener('click', () => {
+        state.activeService = code;
+        tabsEl.querySelectorAll('.service-tab').forEach(t =>
+          t.classList.toggle('active', t.dataset.service === code));
+        renderParts(null, allParts);
+      });
+      tabsEl.appendChild(b);
+    }
+    if (!codes.length) tabsEl.hidden = true;
+  }
+
+  if (!allParts || allParts.length === 0) {
     partChips.innerHTML =
       '<span class="cw-text-empty">No parts for this epoch.</span>';
     return;
@@ -650,7 +690,9 @@ function renderParts(parts) {
     ? chipKey(state.selectedPartEpoch, state.selectedPart, state.selectedCycleSun, state.selectedCycleWkday, state.selectedWkday)
     : null;
 
-  for (const part of parts) {
+  const tabbed = !$('part-service-tabs').hidden;
+  for (const part of allParts) {
+    if (tabbed && part.service_code !== state.activeService) continue;
     const key = chipKey(part.epoch_slug, part.part_code, part.cycle_sun, part.cycle_wkday, part.wkday);
     const btn = document.createElement('button');
     btn.className = 'part-chip' + (key === activeKey ? ' active' : '');
