@@ -129,11 +129,20 @@ function renderSS() {
     if (r.translated) tr.className = 'dash-ss-done';
     const cells = [r.lit_epoch_slug, r.title, r.display_name, r.incipit, r.mode,
                    r.rank_code, r.translated ? '✓ local' : ''];
-    for (const c of cells) {
+    cells.forEach((c, i) => {
       const td = document.createElement('td');
-      td.textContent = c ?? '';
+      if (i === 3 && c && r.chant_group_id != null) {
+        // Chant Browser: filter to the incipit and open this chant group's card
+        const a = document.createElement('a');
+        a.href = `/browse?q=${encodeURIComponent(c)}&open=${r.chant_group_id}`;
+        a.target = '_blank';
+        a.textContent = c;
+        td.appendChild(a);
+      } else {
+        td.textContent = c ?? '';
+      }
       tr.appendChild(td);
-    }
+    });
     ssBody.appendChild(tr);
   }
 }
