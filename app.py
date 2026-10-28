@@ -998,6 +998,10 @@ _DAY_PARTS_SQL = """
         -- hours skip the Common (the saint's own Proper still wins).
         AND NOT (COALESCE(anc.src, '') = 'S' AND sp.service_code IN ({proper_only_in}))
         AND NOT (COALESCE(anc.src, '') = 'C' AND sp.service_code IN ({weekday_only_in}))
+        -- ...nor to the psalter (epoch-less rows keyed on the week and day);
+        -- epoch-less rank rubrics (rank_code, e.g. the Te Deum) still apply.
+        AND NOT (lps.lit_epoch_slug IS NULL AND lps.rank_code IS NULL
+                 AND sp.service_code IN ({no_psalter_in}))
         AND sp.service_code NOT IN ({excluded_in})
     ),
     -- Sources disagree, and the page documents what each one says: every
@@ -1056,7 +1060,9 @@ def _day_parts_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) ->
       1. the observance's own chain (epoch_slug and its ancestors),
       2. for a saint: its Common (proper_of_saints.common_of and ancestors),
       3. for a saint: the season, i.e. the proper_of_seasons day's chain,
-      4. epoch-less rows (psalter, OCO), as before.
+      4. epoch-less rows (psalter, OCO), as before — except on feasts and
+         solemnities, whose proper-only services take only epoch-less rank
+         rubrics, never the psalter (GILH 226-228).
     Every candidate is keyed on the observance's effective rank, so the
     season's rank-conditioned rubrics ("in memoriis") apply to the saint.
     """
@@ -1093,13 +1099,16 @@ def _day_parts_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) ->
     # A saint below solemnity rank has no I Vespers (GILH 225, 231).
     excluded = [] if is_temporal or _has_vespers1(rank_code, wkday, season) else ['VESPERS1']
     proper_only = {'VESPERS1'}
+    no_psalter = set()   # (not VESPERS1 alone: a Sunday's I Vespers is the psalter's)
     if rclass in ('SOLEMNITY', 'FEAST'):
         proper_only |= _PROPER_ONLY_SERVICES
+        no_psalter = proper_only
     sql = (_DAY_PARTS_SQL
            .replace('{chain_sql}', chain_sql)
            .replace('{rank_in}', _in_list('rk', _lps_rank_codes(rank_code, wkday, season), params))
            .replace('{proper_only_in}', _in_list('po', proper_only, params))
            .replace('{weekday_only_in}', _in_list('wo', _HOURS_FROM_WEEKDAY.get(rclass, ()), params))
+           .replace('{no_psalter_in}', _in_list('np', no_psalter, params))
            .replace('{excluded_in}', _in_list('ex', excluded, params)))
     rows = [dict(r) for r in conn.execute(text(sql), params).mappings().fetchall()]
 
