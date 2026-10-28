@@ -148,6 +148,24 @@
   text-align: right;
 }
 
+/* ── Sundays & Solemnities to-do table ───────────────────────────────────── */
+#dash-section-ss h2 {
+  font-size: 1rem;
+  font-weight: normal;
+  text-transform: uppercase;
+  letter-spacing: 0.1em;
+  color: var(--accent);
+  margin-bottom: 0.8rem;
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.3rem;
+}
+.dash-ss-toggle { font-size: 0.8rem; margin-right: 1rem; }
+#dash-ss-count { display: inline; font-size: 0.78rem; color: var(--text-muted); }
+#dash-ss-table { width: 100%; margin-top: 0.8rem; border-collapse: collapse; font-size: 0.8rem; }
+#dash-ss-table th { text-align: left; color: var(--text-muted); border-bottom: 1px solid var(--border); padding: 0.3rem 0.5rem; }
+#dash-ss-table td { padding: 0.25rem 0.5rem; border-bottom: 1px solid var(--border); }
+#dash-ss-table tr.dash-ss-done td { color: var(--text-muted); }
+
 /* ── Responsive: narrow screen collapses cards ───────────────────────────── */
 @media (max-width: 700px) {
   .dash-card { min-width: 100%; max-width: 100%; }

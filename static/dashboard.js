@@ -111,12 +111,55 @@ function renderData(data) {
   sectionChants.hidden = false;
 }
 
+// ── Sundays & Solemnities: chants still to translate ─────────────────────────
+const sectionSS = $('dash-section-ss');
+const ssTodo    = $('dash-ss-todo');
+const ssCount   = $('dash-ss-count');
+const ssBody    = document.querySelector('#dash-ss-table tbody');
+let ssRows = null;   // cached after first fetch
+
+function renderSS() {
+  const rows = ssTodo.checked ? ssRows.filter(r => !r.translated) : ssRows;
+  const done = ssRows.filter(r => r.translated).length;
+  ssCount.textContent =
+    `${ssRows.length - done} untranslated, ${done} translated (${ssRows.length} rows)`;
+  ssBody.innerHTML = '';
+  for (const r of rows) {
+    const tr = document.createElement('tr');
+    if (r.translated) tr.className = 'dash-ss-done';
+    const cells = [r.lit_epoch_slug, r.title, r.display_name, r.incipit, r.mode,
+                   r.rank_code, r.translated ? '✓ local' : ''];
+    for (const c of cells) {
+      const td = document.createElement('td');
+      td.textContent = c ?? '';
+      tr.appendChild(td);
+    }
+    ssBody.appendChild(tr);
+  }
+}
+
+async function showSS() {
+  sectionSS.hidden = false;
+  if (!ssRows) {
+    ssCount.textContent = 'Loading…';
+    try {
+      ssRows = await apiFetch('/api/dashboard/sundays-solemnities');
+    } catch (err) {
+      ssCount.textContent = `Error: ${err.message}`;
+      return;
+    }
+  }
+  renderSS();
+}
+ssTodo.addEventListener('change', () => ssRows && renderSS());
+
 // ── Fetch + render ────────────────────────────────────────────────────────────
 async function fetchAndRender() {
   dashLoading.hidden = false;
   dashError.hidden = true;
   sectionSources.hidden = true;
   sectionChants.hidden = true;
+  if (currentScope === 'sundays-solemnities') showSS(); else sectionSS.hidden = true;
 
   // Update chip active state immediately
   for (const btn of scopeChips.querySelectorAll('.chip')) {

@@ -5190,6 +5190,54 @@ def _dashboard_coverage(scope: str):
         }
 
 
+# Source: GRADUALE_NOVI_MUNDI/volume1.sql (Sundays and Solemnities).  One row per
+# Graduale in/of/co slot, with the LOCAL (English) chant(s) in the same chant
+# group when they exist; `translated` is false when only the Graduale chant exists.
+_SS_TRANSLATION_SQL = """
+with s_and_s as (
+select
+  lps.lit_epoch_slug, le.title, ch.incipit, ch.mode, sp.display_name, lps.wkday, le.seq,
+  plr.rank_code, le.sort_order,
+  coalesce(lps.chant_group_id, ch.chant_group_id) as chant_group_id,
+  sp.part_id
+from lit_part_sources lps
+left join chants ch
+  on ch.chant_uuid = lps.chant_uuid
+join lit_epoch le
+  on le.slug = lps.lit_epoch_slug
+join service_part sp
+  on sp.part_id = lps.part_id
+left join p_lit_rank plr
+  on le.rank_code = plr.rank_code
+where lps.book = 'GRADUALE'
+  and (le.kind in ('season','subseason','week','mass') or lps.wkday = 1 or le.seq in (0,1) or plr.sort_order <= 60)
+  and (lps.wkday is null or lps.wkday < 2 or plr.sort_order = 10)
+  and sp.part_code in ('in','of','co')
+)
+SELECT
+  case when lc.incipit is NULL then false else true end as translated,
+  ss.lit_epoch_slug, ss.title,
+  coalesce(lc.incipit, ss.incipit) as incipit,
+  coalesce(lc.mode, ss.mode) as mode,
+  ss.display_name, ss.wkday, ss.seq, ss.rank_code, ss.chant_group_id
+from s_and_s ss
+left join chants lc
+  on lc.origin_source='LOCAL'
+ and lc.chant_group_id = ss.chant_group_id
+order by ss.sort_order, ss.lit_epoch_slug, ss.part_id
+"""
+
+
+@app.get("/api/dashboard/sundays-solemnities")
+def api_dashboard_sundays_solemnities():
+    try:
+        with ro().connect() as conn:
+            rows = conn.execute(text(_SS_TRANSLATION_SQL)).mappings().all()
+        return [{**r, 'translated': bool(r['translated'])} for r in rows]
+    except Exception as exc:
+        raise HTTPException(503, str(exc))
+
+
 @app.get("/api/dashboard/coverage")
 def api_dashboard_coverage(scope: str = Query(default='all')):
     try:
