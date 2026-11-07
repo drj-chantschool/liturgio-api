@@ -72,6 +72,7 @@
   max-width: 260px;
 }
 .observance-tab .tab-title,
+.observance-tab .tab-slug { display: none; }
 .observance-tab .tab-role {
   white-space: normal;
   overflow-wrap: break-word;
@@ -334,4 +335,28 @@
   .observance-tab { padding: 0.25rem 0.55rem; }
   .observance-tab .tab-title { font-size: 0.78rem; }
   .observance-tab .tab-rank, .observance-tab .tab-role { font-size: 0.6rem; }
+
+  /* The active observance tab doubles as the header (it carries the slug). */
+  #observance-header { display: none; }
+  .observance-tab .tab-slug {
+    display: block;
+    font-family: 'Courier New', monospace;
+    font-size: 0.6rem;
+    opacity: 0.75;
+  }
+
+  /* Service tabs and part-option tabs: one horizontally scrollable line. */
+  #service-tabs {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    padding: 0.4rem 0.8rem 0;
+    -webkit-overflow-scrolling: touch;
+  }
+  .service-tab { flex-shrink: 0; }
+  .part-row-header {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .part-row-header > * { flex-shrink: 0; }
 }

@@ -138,7 +138,8 @@ function renderTabs(observances) {
     const label = roleLabel(obs);
     btn.innerHTML = `<span class="tab-title">${escHtml(obs.title)}</span>` +
       `<span class="tab-rank">${escHtml(shortRank(obs))}</span>` +
-      (label ? `<span class="tab-role">${escHtml(label)}</span>` : '');
+      (label ? `<span class="tab-role">${escHtml(label)}</span>` : '') +
+      `<span class="tab-slug">${escHtml(obs.epoch_slug)}</span>`;
     btn.addEventListener('click', () => {
       state.activeSlug = obs.epoch_slug;
       tabsEl.querySelectorAll('.observance-tab').forEach(b => b.classList.toggle('active', b === btn));
