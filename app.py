@@ -982,6 +982,11 @@ _DAY_PARTS_SQL = """
           ON anc.slug = lps.lit_epoch_slug
         LEFT JOIN chants ch ON ch.chant_uuid = lps.chant_uuid
         WHERE (lps.lit_epoch_slug IS NULL OR anc.slug IS NOT NULL)
+        -- A dated overlay outranked by the day (see _with_date_layer) enters
+        -- the chain twice: its weekday-explicit rows ahead of the day (wk='E'),
+        -- its generic rows only as fill-in behind it (wk='G').
+        AND NOT (COALESCE(anc.wk, 'A') = 'E' AND lps.wkday IS NULL)
+        AND NOT (COALESCE(anc.wk, 'A') = 'G' AND lps.wkday IS NOT NULL)
         -- Week parity ("per hebdomadas I et III" / psalter weeks) applies to
         -- epoch rows too, e.g. TQ Compline, OT-OT daytime hymns.
         AND (lps.wknum_mod_4 IS NULL OR lps.wknum_mod_4 = MOD(:wknum, 4))
@@ -1049,32 +1054,56 @@ def _in_list(prefix: str, values, params: dict) -> str:
     return ', '.join(f':{prefix}{i}' for i in range(len(values)))
 
 
+def _with_date_layer(slugs: List[str], src: str, layer: Optional[dict]) -> list:
+    """Chain entries (slug, src, wk) for a temporal chain plus the day's dated
+    overlay epochs (lit_epoch.kind='date', e.g. O-SAPIENTIA on Dec 17).
+
+    The overlay is part of the day, not an observance of its own. When it ranks
+    with the day (a late-Advent feria) it simply goes first. When the day
+    outranks it (a Sunday), the day's own parts win and the overlay only fills
+    in after the day's chain, except for its weekday-explicit rows: those are
+    the books' "if this Sunday falls on Dec N" rubrics (wkday=1 on the date
+    epoch), and they go first. wk: 'A' all rows, 'E' wkday-explicit only,
+    'G' wkday-generic only."""
+    chain = [(s, src, 'A') for s in slugs]
+    if not layer or not layer['slugs']:
+        return chain
+    dated = layer['slugs']
+    if layer['outranked']:
+        return ([(d, src, 'E') for d in dated] + chain + [(d, src, 'G') for d in dated])
+    return [(d, src, 'A') for d in dated] + chain
+
+
 def _day_parts_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) -> dict:
     """Return {service_code: [DayPartAssignment, ...]} for one epoch slug.
 
     Candidate epochs, most specific first (issue #9):
-      1. the observance's own chain (epoch_slug and its ancestors),
+      1. the observance's own chain (epoch_slug and its ancestors; for the
+         temporal day, with its dated overlay, see _with_date_layer),
       2. for a saint: its Common (proper_of_saints.common_of and ancestors),
       3. for a saint: the season, i.e. the proper_of_seasons day's chain,
+         dated overlay included,
       4. epoch-less rows (psalter, OCO), as before.
     Every candidate is keyed on the observance's effective rank, so the
     season's rank-conditioned rubrics ("in memoriis") apply to the saint.
     """
     own = _ancestor_chain(conn, epoch_slug)
     is_temporal = ctx.get('is_temporal', False)
+    layer = ctx.get('date_layer')
     if is_temporal:
-        chain = [(s, 'T') for s in own]
+        chain = _with_date_layer(own, 'T', layer if epoch_slug == ctx.get('temporal_slug') else None)
     else:
-        chain = ([(s, 'P') for s in own]
-                 + [(s, 'C') for s in ctx.get('common_chain', [])]
-                 + [(s, 'S') for s in ctx.get('season_chain', [])])
+        chain = ([(s, 'P', 'A') for s in own]
+                 + [(s, 'C', 'A') for s in ctx.get('common_chain', [])]
+                 + _with_date_layer(ctx.get('season_chain', []), 'S',
+                                    layer if ctx.get('season_chain') else None))
     if not chain:
-        chain = [('', 'T')]   # keep the CTE non-empty
+        chain = [('', 'T', 'A')]   # keep the CTE non-empty
     seen, deduped = set(), []
-    for slug, src in chain:
-        if slug not in seen:
-            seen.add(slug)
-            deduped.append((slug, src))
+    for slug, src, wk in chain:
+        if (slug, wk) not in seen:
+            seen.add((slug, wk))
+            deduped.append((slug, src, wk))
 
     rank_code, wkday, season = ctx.get('rank_code'), ctx['wkday'], ctx.get('season')
     rclass = _rank_class(rank_code, wkday, season)
@@ -1086,10 +1115,10 @@ def _day_parts_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict) ->
         'wknum': ctx['wknum'],
     }
     chain_sql = '\n        UNION ALL '.join(
-        f'SELECT CAST(:anc{i} AS CHAR(64)) AS slug, {i} AS depth, :src{i} AS src'
+        f'SELECT CAST(:anc{i} AS CHAR(64)) AS slug, {i} AS depth, :src{i} AS src, :wk{i} AS wk'
         for i in range(len(deduped)))
-    for i, (slug, src) in enumerate(deduped):
-        params[f'anc{i}'], params[f'src{i}'] = slug, src
+    for i, (slug, src, wk) in enumerate(deduped):
+        params[f'anc{i}'], params[f'src{i}'], params[f'wk{i}'] = slug, src, wk
     # A saint below solemnity rank has no I Vespers (GILH 225, 231).
     excluded = [] if is_temporal or _has_vespers1(rank_code, wkday, season) else ['VESPERS1']
     proper_only = {'VESPERS1'}
@@ -1359,6 +1388,62 @@ def _formularies_for_epoch(conn, jurisdiction: str, epoch_slug: str, ctx: dict):
     return formularies, tabs
 
 
+def _psalter_wknum(dt: datetime.date, season: Optional[str], subseason: Optional[str],
+                   wknum: Optional[int]) -> Optional[int]:
+    """The week number the psalter cycle (wknum_mod_4 / wknum_mod_2) runs on:
+    the temporal day's own week, except in late Advent. ADV-II-01-x days are
+    keyed by weekday alone (Dec 17 and Dec 24 can share one), so their psalter
+    week is the real week of Advent: 4 from the 4th Sunday on, 3 before it."""
+    if season == 'ADV' and subseason == 'II':
+        dec24 = datetime.date(dt.year, 12, 24)
+        advent4 = dec24 - datetime.timedelta(days=dec24.isoweekday() % 7)
+        return 4 if dt >= advent4 else 3
+    return wknum
+
+
+def _dated_overlay(conn, dt: datetime.date, jurisdiction: str) -> list:
+    """The kind='date' epochs on this civil date (proper_of_saints is the
+    month/day lookup), with their rank's sort_order."""
+    return [dict(r) for r in conn.execute(text("""
+        SELECT pos.slug, le.title, plr.sort_order AS rank_sort
+        FROM proper_of_saints pos
+        JOIN lit_epoch le   ON le.slug = pos.slug AND le.kind = 'date'
+        JOIN p_lit_rank plr ON plr.rank_code = pos.rank_code
+        WHERE pos.month_nominal = :m AND pos.day_nominal = :d
+          AND pos.jurisdiction IN (:jur, 'UNIVERSAL')
+        ORDER BY pos.slug
+    """), {'m': dt.month, 'd': dt.day, 'jur': jurisdiction}).mappings().fetchall()]
+
+
+def _vespers1_from_eve(conn, jurisdiction: str, formularies: list, temporal_slug: str,
+                       eve_dated: list, ctx: dict) -> None:
+    """I Vespers is sung on the eve, so the eve's dated overlay supplies its
+    Magnificat antiphon (OCO p45, I Vespers of Advent IV: "M antiphona O, de
+    die currente") unless the day itself assigns one. Edits formularies in place."""
+    vesp1 = next((f.services['VESPERS1'] for f in formularies if 'VESPERS1' in f.services), None)
+    if vesp1 is None or any(s.lit_epoch_slug == temporal_slug
+                            for p in vesp1 if p.part_code == 'antM' for s in p.sources):
+        return
+    slot = conn.execute(text(
+        "SELECT display_name, display_order FROM service_part WHERE service_code='VESPERS1' AND part_code='antM'"
+    )).mappings().fetchone()
+    if slot is None:
+        return
+    eve_parts = []
+    for d in eve_dated:
+        services = _day_parts_for_epoch(conn, jurisdiction, d['slug'], {
+            **ctx, 'is_temporal': True, 'rank_code': None, 'wkday': (ctx['wkday'] + 5) % 7 + 1})
+        for p in services.get('VESPERS', []):
+            sources = [s for s in p.sources if s.lit_epoch_slug == d['slug']]
+            if p.part_code == 'antM' and sources:
+                eve_parts.append(p.model_copy(update={
+                    'service_code': 'VESPERS1', 'display_name': slot['display_name'],
+                    'display_order': slot['display_order'], 'sources': sources}))
+    if eve_parts:
+        vesp1[:] = sorted([p for p in vesp1 if p.part_code != 'antM'] + eve_parts,
+                          key=lambda p: (p.display_order, p.part_code))
+
+
 @app.get("/api/day/{date}", response_model=DayResponse)
 def get_day(date: str, jurisdiction: str = Query('US')):
     try:
@@ -1371,7 +1456,7 @@ def get_day(date: str, jurisdiction: str = Query('US')):
             temporal = conn.execute(text("""
                 SELECT pos.lit_day_id AS epoch_slug, le.title, le.kind, le.rank_code,
                        plr.display_name AS rank_display_name, plr.sort_order AS rank_sort,
-                       pos.cycle_wk, pos.cycle_sun, pos.wkday, le.wknum, le.season
+                       pos.cycle_wk, pos.cycle_sun, pos.wkday, le.wknum, le.season, le.subseason
                 FROM proper_of_seasons pos
                 JOIN lit_epoch le  ON le.slug        = pos.lit_day_id
                 JOIN p_lit_rank plr ON plr.rank_code = le.rank_code
@@ -1388,7 +1473,7 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                 'cycle_wk': temporal['cycle_wk'],
                 'cycle_sun': temporal['cycle_sun'],
                 'wkday': temporal['wkday'],
-                'wknum': temporal['wknum'],
+                'wknum': _psalter_wknum(dt, temporal['season'], temporal['subseason'], temporal['wknum']),
                 'season': temporal['season'],
             }
 
@@ -1408,8 +1493,10 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                 }
             }
 
-            # Any saint whose fixed nominal date is this civil date, regardless
+            # Any observance whose fixed nominal date is this civil date, regardless
             # of whether it would actually be celebrated (no precedence run here).
+            # proper_of_saints is only the month/day lookup: kind='date' epochs
+            # found there are the temporal day's dated overlay, not observances.
             saint_rows = conn.execute(text("""
                 SELECT pos.slug AS epoch_slug, le.title, le.kind, pos.rank_code,
                        plr.display_name AS rank_display_name, plr.sort_order AS rank_sort,
@@ -1419,8 +1506,19 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                 JOIN p_lit_rank plr ON plr.rank_code = pos.rank_code
                 WHERE pos.month_nominal = :m AND pos.day_nominal = :d
                   AND pos.jurisdiction IN (:jur, 'UNIVERSAL')
+                  AND le.kind <> 'date'
                 ORDER BY CASE WHEN pos.jurisdiction = :jur THEN 0 ELSE 1 END
             """), {'m': dt.month, 'd': dt.day, 'jur': jurisdiction}).mappings().fetchall()
+
+            dated = _dated_overlay(conn, dt, jurisdiction)
+            eve_dated = _dated_overlay(conn, dt - datetime.timedelta(days=1), jurisdiction)
+            date_layer = {
+                'slugs': [r['slug'] for r in dated],
+                'outranked': any(temporal['rank_sort'] < r['rank_sort'] for r in dated),
+            }
+            if dated and not date_layer['outranked']:
+                # A late-Advent feria is known by its date ("O, Holy Wisdom").
+                observances[temporal['epoch_slug']]['title'] = dated[0]['title']
 
             # Movable memorials dated onto this civil date (e.g. the Immaculate
             # Heart); the weekday keeps the proper_of_seasons row.
@@ -1532,9 +1630,14 @@ def get_day(date: str, jurisdiction: str = Query('US')):
                         **ctx,
                         'rank_code': eff_rank,
                         'is_temporal': is_temporal,
+                        'temporal_slug': temporal['epoch_slug'],
+                        'date_layer': date_layer,
                         'common_chain': _ancestor_chain(conn, obs['common_of']),
                         'season_chain': season_chain if fill_from_season else [],
                     })
+                if is_temporal and eve_dated:
+                    _vespers1_from_eve(conn, jurisdiction, obs['formularies'],
+                                       temporal['epoch_slug'], eve_dated, ctx)
                 sort_keys.append(own_sort)
                 result.append(DayObservance(**obs))
     except HTTPException:
@@ -4923,9 +5026,9 @@ def _dashboard_coverage(scope: str):
 
     Caveat: L.seq only means "day of week" when L and its tree-siblings form
     a genuine <=7-day week. A few date-anchored day ranges reuse the same
-    `seq` column for a within-range date offset instead (e.g. ADV-II's "in
-    ultimis feriis", Dec 17-24 = 8 dated days, seq 1..8 -- an 8th value no
-    real day-of-week can take). For those, `lps.wkday == L.seq` is comparing
+    `seq` column for a within-range date offset instead (ADV-II's Dec 17-24
+    did, seq 1..8, until the 2026-11-11 kind='date' redesign -- an 8th value
+    no real day-of-week can take). For those, `lps.wkday == L.seq` is comparing
     two unrelated axes, so it's disabled per _seq_is_weekday() below.
     """
     with ro().connect() as conn:
@@ -4963,7 +5066,7 @@ def _dashboard_coverage(scope: str):
 
         # A leaf's own `seq` is only a valid day-of-week (1=Sun..7=Sat) proxy
         # when it and its tree-siblings form a genuine <=7-day week. Some
-        # date-anchored day ranges (e.g. ADV-II, Dec 17-24) reuse `seq` for a
+        # date-anchored day ranges (formerly ADV-II, Dec 17-24) reuse `seq` for a
         # within-range date offset instead, which can exceed 7 -- a value no
         # real day-of-week can take. Detect those groups by that impossible
         # value rather than hardcoding slugs, so any future date-anchored
